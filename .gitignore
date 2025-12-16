@@ -1,0 +1,20 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+
+# Generated data files
+*.db
+portfolio.json
+portfolio_eval.json
+simulation_results.json
+log.txt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+launchd.out
+launchd.err
+
+msal_cache.json
