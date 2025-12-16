@@ -1,6 +1,6 @@
 # Stock Trading Agent
 
-AI-powered stock trading agent with the goal to outperform Nasdaq100
+LangGraph stock trading agent with the goal to outperform Nasdaq100
 
 ## Performance vs Nasday 100
 
