@@ -39,6 +39,7 @@ from typing import Optional
 
 import config
 from portfolio_database import PortfolioDatabase
+from stock_history_database import StockHistoryDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,9 @@ class Portfolio:
         """Apply trade recommendations and return new portfolio. Returns None if no trades."""
         logger.info("📈 Applying Recommended Portfolio Changes:")
 
+        # Create database instance for fetching execution prices
+        stock_db = StockHistoryDatabase(self.cfg)
+
         # Create new portfolio with deep copy
         new_portfolio = Portfolio(cfg=self.cfg)
         new_portfolio.cash = self.cash
@@ -222,7 +226,12 @@ class Portfolio:
             symbol = trade.symbol
             assert symbol, "Trade must have symbol"
             assert trade.action in ["SELL", "BUY", "HOLD"], "Trade action must be SELL or BUY or HOLD"
-            assert trade.action == "HOLD" or trade.shares and trade.price, "Trade must have symbol, shares, and price"
+            assert trade.action == "HOLD" or trade.shares, "Trade must have symbol and shares"
+
+            # Get execution price from database for BUY/SELL trades
+            execution_price = None
+            if trade.action in ["BUY", "SELL"]:
+                execution_price = stock_db.get_latest_price(symbol)
 
             if trade.action == "SELL":
                 assert symbol in new_portfolio.positions and "lots" in new_portfolio.positions[symbol], (
@@ -232,10 +241,10 @@ class Portfolio:
 
                 trades_recommended += 1
                 shares_to_sell = int(trade.shares)
-                logger.info(f"  {trade.action} {symbol}: {shares_to_sell} shares at ${trade.price:.2f}")
+                logger.info(f"  {trade.action} {symbol}: {shares_to_sell} shares at ${execution_price:.2f}")
 
                 # Add cash from sale
-                new_portfolio.cash += shares_to_sell * trade.price
+                new_portfolio.cash += shares_to_sell * execution_price
 
                 current_lots = new_portfolio.positions[symbol]["lots"]
 
@@ -250,7 +259,7 @@ class Portfolio:
                     lot = current_lots[0]
                     if lot.shares <= remaining_to_sell:
                         # Sell entire lot - move to closed_lots
-                        closed_lot = Lot(date=lot.date, shares=lot.shares, price_per_share=lot.price_per_share, sale_date=today, sale_price=trade.price)
+                        closed_lot = Lot(date=lot.date, shares=lot.shares, price_per_share=lot.price_per_share, sale_date=today, sale_price=execution_price)
                         new_portfolio.closed_lots[symbol].append(closed_lot)
                         remaining_to_sell -= lot.shares
                         current_lots = current_lots[1:]
@@ -260,7 +269,7 @@ class Portfolio:
                         remaining_shares = lot.shares - remaining_to_sell
 
                         # Create closed lot for sold portion
-                        closed_lot = Lot(date=lot.date, shares=shares_sold, price_per_share=lot.price_per_share, sale_date=today, sale_price=trade.price)
+                        closed_lot = Lot(date=lot.date, shares=shares_sold, price_per_share=lot.price_per_share, sale_date=today, sale_price=execution_price)
                         new_portfolio.closed_lots[symbol].append(closed_lot)
 
                         # Update current lot with remaining shares
@@ -271,27 +280,28 @@ class Portfolio:
                 # Update position or remove if no lots remain
                 if current_lots:
                     new_portfolio.positions[symbol]["lots"] = current_lots
-                    self._update_position(new_portfolio.positions[symbol], trade.price)
+                    self._update_position(new_portfolio.positions[symbol], execution_price)
                 else:
                     del new_portfolio.positions[symbol]
 
             elif trade.action == "BUY":
-                trade_cost = int(trade.shares) * trade.price
-                assert new_portfolio.cash >= trade_cost, "Cash must be greater than or equal to trade cost"
+                trade_cost = trade.shares * execution_price
+                # allow cash to be slighly less than 0
+                assert new_portfolio.cash + 100 >= trade_cost, "Cash must be greater than or equal to trade cost"
 
                 trades_recommended += 1
-                logger.info(f"  {trade.action} {symbol}: {trade.shares} shares at {trade.price:.2f}")
+                logger.info(f"  {trade.action} {symbol}: {trade.shares} shares at {execution_price:.2f}")
 
                 new_portfolio.cash -= trade_cost
 
                 # Create new lot
-                new_lot = Lot(date=today, shares=int(trade.shares), price_per_share=trade.price)
+                new_lot = Lot(date=today, shares=int(trade.shares), price_per_share=execution_price)
 
                 if symbol not in new_portfolio.positions:
                     new_portfolio.positions[symbol] = {"lots": []}
 
                 new_portfolio.positions[symbol]["lots"].append(new_lot)
-                self._update_position(new_portfolio.positions[symbol], trade.price)
+                self._update_position(new_portfolio.positions[symbol], execution_price)
 
         if trades_recommended > 0:
             # Recalculate portfolio totals

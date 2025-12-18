@@ -5,9 +5,6 @@
 
 set -e  # Exit on any error
 
-# not sure why this is needed, PYTHONPATH is set in bash_profile
-export PYTHONPATH="/Users/Mircea/git/ml:/Users/Mircea/git/ml-private/pocs/shared"
-
 # Configuration
 PROJECT_DIR="/Users/Mircea/git/stock-agent"
 

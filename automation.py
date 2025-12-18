@@ -2,12 +2,13 @@ import logging
 import os
 from datetime import datetime, timezone
 
+import markdown
+from dotenv import load_dotenv
+
 import agent
 import config
-import markdown
 import portfolio
 import stock_history_sync
-from dotenv import load_dotenv
 from outlook_auth import OutlookAuthenticator
 from outlook_client import OutlookClient
 

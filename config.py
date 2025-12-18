@@ -24,7 +24,7 @@ class Config:
     """Runtime configuration that can be overridden via command line."""
 
     # Trading limits
-    max_tool_calls: int = 20
+    max_tool_calls: int = 40
     max_positions: int = 10
     default_cash: float = 10000.0
     top_alternatives_count: int = 3  # Number of top alternative stocks to track
@@ -37,7 +37,9 @@ class Config:
     as_of_date: str = None  # Date to run agent for (YYYY-MM-DD), used for memory tracking
 
     # Model settings
-    llm_model: str = "gpt-5"
+    # llm_model: str = "gpt-5.2"
+    # llm_model: str = "gpt-5.2-pro"
+    llm_model: str = "gemini-3-pro-preview"
     llm_temperature: float = 0.0  # Maximum determinism
     llm_seed: int = 12345  # Fixed seed for reproducible results
 

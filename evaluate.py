@@ -17,13 +17,14 @@ import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
+
 import agent
 import chart_portfolio
 import config
 import memory_database
 import portfolio
 import portfolio_database
-from dotenv import load_dotenv
 from stock_history_database import StockHistoryDatabase
 
 logger = logging.getLogger(__name__)
@@ -139,19 +140,22 @@ def main():
         if os.path.exists(cfg.portfolio_file):
             os.remove(cfg.portfolio_file)
         portfolio_database.PortfolioDatabase.drop_database(cfg.portfolio_db_name)
-        # TODO: start with some memory data, like 30 days before the first day of the evaluation
-        if os.path.exists(cfg.memory_db_name):
-            os.remove(cfg.memory_db_name)
 
-        # Initialize fresh portfolio and databases
+        # Copy real memory database and filter to data before first trading day
+        logger.info(f"Preparing memory database: copying and filtering to before {trading_dates[0]}")
+        shutil.copy(config.MEMORY_DB_NAME, cfg.memory_db_name)
+        memory_db = memory_database.MemoryDatabase(cfg)
+        memory_db.remove_data_after_date(trading_dates[0])
+        logger.info(f"Memory database ready with historical data before {trading_dates[0]}")
+
+        # Initialize fresh portfolio
         initial_portfolio = portfolio.Portfolio(cfg)
         initial_portfolio.prices_as_of = trading_dates[0]
         initial_portfolio.save()
-        _ = memory_database.MemoryDatabase(cfg)
 
         # Run agent for each trading date
-        for idx, date in enumerate(trading_dates, 1):
-            logger.info(f"\n>>> Simulation {sim_id + 1}, Trading day {idx}/{len(trading_dates)}: {date}")
+        for idx, date in enumerate(trading_dates):
+            logger.info(f"\n>>> Simulation {sim_id + 1}, Trading day {idx + 1}/{len(trading_dates)}: {date}")
             cfg.as_of_date = date
             # Copy and filter database for this date
             logger.info(f"Preparing database: copying and filtering to {cfg.as_of_date}")

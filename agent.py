@@ -13,16 +13,11 @@ import signal
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Dict, List, Optional
 
-import config
-import prompts
-
 # Load environment variables
 from dotenv import load_dotenv
-from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -30,24 +25,47 @@ from langchain_core.messages import (
     SystemMessage,
 )
 from langchain_core.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from langchain_tavily import TavilySearch
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from memory_database import MemoryDatabase
-from portfolio import Portfolio
 from pydantic import BaseModel
 
+import config
+import prompts
+from memory_database import MemoryDatabase
+from portfolio import Portfolio
+from stock_history_database import StockHistoryDatabase
+
 logger = logging.getLogger(__name__)
+
+
+def extract_content_as_string(content) -> str:
+    """
+    Extract text content from message content that can be either string or list.
+    GPT-5.2 and newer models can return content as a list of blocks.
+    """
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif isinstance(block, dict) and "text" in block:
+                text_parts.append(block["text"])
+        return "\n".join(text_parts)
+    return str(content)  # Fallback for unexpected types
 
 
 class TradeRecommendation(BaseModel):
     """Structured trade recommendation from the trading agent."""
 
     action: str  # "BUY", "SELL", or "HOLD"
-    symbol: Optional[str] = None  # Stock symbol (if applicable)
-    shares: Optional[float] = None  # Number of shares
-    price: Optional[float] = None  # Target price
+    symbol: str  # Stock symbol
+    shares: int  # Number of shares (required for BUY/SELL, ignored for HOLD)
     reasoning: str  # Detailed reasoning for the recommendation
     confidence: Optional[str] = None  # "HIGH", "MEDIUM", "LOW"
 
@@ -60,7 +78,6 @@ class StockScore(BaseModel):
     momentum_score: float
     quality_score: float
     technical_score: float
-    current_price: float
 
 
 class TradingAnalysis(BaseModel):
@@ -68,7 +85,7 @@ class TradingAnalysis(BaseModel):
 
     complete_analysis: str  # Full AI analysis message from the agent
     summary: str  # Overall market analysis summary
-    trade_recommendations: List[TradeRecommendation] = []  # Trade recommendations from agent
+    trade_recommendations: List[TradeRecommendation]  # Trade recommendations from agent
     market_outlook: str  # Bull/Bear/Neutral with reasoning
     risk_assessment: str  # Risk factors identified
     current_holdings_scores: List[StockScore]  # Scores for current positions
@@ -90,10 +107,21 @@ def create_run_sql_tool(cfg: config.Config):
     @tool
     def run_sql(query: str) -> str:
         """
-        Execute a SQL query against the NASDAQ stocks database.
+        PRIMARY DATA GATHERING TOOL - Execute SQL queries against the NASDAQ stocks database.
 
-        This function provides access to a comprehensive database of NASDAQ 100 stocks
-        with 3 years of historical data including prices, fundamentals, and statistics.
+        **CRITICAL: Use this tool extensively in Phase 1 (10-15 times minimum) before making any decisions.**
+
+        This provides access to comprehensive NASDAQ 100 data:
+        - 3 years of daily price history
+        - Fundamental metrics (P/E, ROE, margins, debt, etc.)
+        - Technical indicators (moving averages, volume, etc.)
+        - Corporate actions (splits, dividends)
+
+        Use this to:
+        - Calculate momentum, returns, and performance metrics
+        - Analyze fundamentals across stocks
+        - Compare valuations and risk metrics
+        - Identify trends and patterns
 
         Args:
             query: SQL SELECT query to execute (INSERT/UPDATE/DELETE not allowed)
@@ -120,28 +148,32 @@ def create_run_sql_tool(cfg: config.Config):
                 return columns, rows
 
         # Execute query with timeout using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(execute_query)
-            try:
-                columns, rows = future.result(timeout=300)  # 5 minute timeout
-            except FuturesTimeoutError:
-                raise TimeoutError(f"SQL query exceeded 5 minute timeout: {query[:100]}")
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(execute_query)
+                try:
+                    columns, rows = future.result(timeout=300)  # 5 minute timeout
+                except FuturesTimeoutError:
+                    raise TimeoutError(f"SQL query exceeded 5 minute timeout: {query}")
 
-        # Process results
-        data = []
-        for row in rows:
-            row_dict = {}
-            for i, value in enumerate(row):
-                # Handle different data types
-                if value is None:
-                    row_dict[columns[i]] = None
-                elif isinstance(value, (int, float, str)):
-                    row_dict[columns[i]] = value
-                else:
-                    row_dict[columns[i]] = str(value)
-            data.append(row_dict)
+            # Process results
+            data = []
+            for row in rows:
+                row_dict = {}
+                for i, value in enumerate(row):
+                    # Handle different data types
+                    if value is None:
+                        row_dict[columns[i]] = None
+                    elif isinstance(value, (int, float, str)):
+                        row_dict[columns[i]] = value
+                    else:
+                        row_dict[columns[i]] = str(value)
+                data.append(row_dict)
 
-        result = {"columns": columns, "data": data, "row_count": len(data)}
+            result = {"columns": columns, "data": data, "row_count": len(data)}
+        except Exception as e:
+            logger.error(f"Error {e} executing query {query}")
+            result = {"error": str(e), "query": query}
         return json.dumps(result, indent=2)
 
     return run_sql
@@ -153,9 +185,31 @@ def create_search_web_tool(cfg: config.Config):
     @tool
     def search_web(query: str) -> str:
         """
-        Search the web for market information and analysis.
+        PRIMARY SENTIMENT & NEWS GATHERING TOOL - Search the web for market news, sentiment, and analysis.
 
-        Can search for news articles, analyst reports, sector trends, or general information.
+        **CRITICAL: Use this tool extensively in Phase 1 (5-8 times minimum) before making any decisions.**
+
+        This provides access to current market information not available in historical data:
+        - Breaking news and recent earnings reports
+        - Analyst opinions and market sentiment
+        - Sector trends and macroeconomic factors
+        - Company-specific developments (product launches, scandals, leadership changes)
+        - Regulatory changes and industry shifts
+
+        Use this to:
+        - Check recent news for current holdings (e.g., "NVDA news December 2025")
+        - Gauge market sentiment for top candidates (e.g., "GOOGL analyst ratings")
+        - Identify sector trends (e.g., "semiconductor industry outlook")
+        - Find red flags (e.g., "TSLA recall news", "META earnings miss")
+        - Research macroeconomic factors (e.g., "Federal Reserve interest rate policy")
+
+        **Best Practices:**
+        - Include "news" for recent developments: "AAPL news"
+        - Add time context when available: "MSFT earnings Q4 2025"
+        - Search each current holding individually
+        - Search top momentum stocks from your SQL queries
+        - Search relevant sectors and broader market trends
+
         To find news, include "news" in your query (e.g., "NVDA news", "Federal Reserve latest news").
 
         Args:
@@ -165,9 +219,9 @@ def create_search_web_tool(cfg: config.Config):
             end_date = cfg.as_of_date if cfg.as_of_date else None
 
             if end_date:
-                search = TavilySearchResults(max_results=3, kwargs={"end_date": end_date})
+                search = TavilySearch(max_results=3, kwargs={"end_date": end_date})
             else:
-                search = TavilySearchResults(max_results=3)
+                search = TavilySearch(max_results=3)
 
             results = search.invoke(query)
             return json.dumps({"success": True, "query": query, "end_date": end_date, "results": results}, indent=2)
@@ -323,10 +377,15 @@ def initialize_agent_node(state: TradingState, cfg: config.Config) -> TradingSta
     system_msg = prompts.get_system_prompt(
         portfolio_cash=state["portfolio_cash"],
         portfolio_positions=state["portfolio_positions"],
+        data_as_of_date=portfolio.prices_as_of or "unknown",
         cfg=cfg,
     )
 
-    state["messages"].append(SystemMessage(content=system_msg))
+    # Use HumanMessage for Gemini (doesn't support SystemMessage), SystemMessage for GPT
+    if "gemini" in cfg.llm_model.lower():
+        state["messages"].append(HumanMessage(content=system_msg))
+    else:
+        state["messages"].append(SystemMessage(content=system_msg))
 
     return state
 
@@ -389,13 +448,10 @@ def print_analysis(trading_analysis, use_markdown: bool = False):
     if trading_analysis.trade_recommendations:
         if use_markdown:
             text += "## Trade Recommendations\n\n"
-            text += "| Action | Symbol | Shares | Price | Confidence | Reasoning |\n"
-            text += "|--------|--------|-------:|------:|-----------:|:----------|\n"
+            text += "| Action | Symbol | Shares | Confidence | Reasoning |\n"
+            text += "|--------|--------|-------:|-----------:|:----------|\n"
             for rec in trading_analysis.trade_recommendations:
-                price_str = f"${rec.price:.2f}" if rec.price else "Market"
-                shares_str = f"{rec.shares:,}" if rec.shares else "N/A"
-                symbol_str = rec.symbol if rec.symbol else "N/A"
-                text += f"| **{rec.action}** | {symbol_str} | {shares_str} | {price_str} | {rec.confidence} | {rec.reasoning} |\n"
+                text += f"| **{rec.action}** | {rec.symbol} | {rec.shares:,} | {rec.confidence} | {rec.reasoning} |\n"
             text += "\n"
         else:
             text += "\n📋 Trade Recommendations\n"
@@ -405,10 +461,10 @@ def print_analysis(trading_analysis, use_markdown: bool = False):
     # Current Holdings Scores
     if use_markdown:
         text += "## Stock Scores - Current Holdings\n\n"
-        text += "| Symbol | Composite | Momentum | Quality | Technical | Price |\n"
-        text += "|--------|----------:|---------:|--------:|----------:|------:|\n"
+        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
+        text += "|--------|----------:|---------:|--------:|----------:|\n"
         for rec in trading_analysis.current_holdings_scores:
-            text += f"| {rec.symbol} | {rec.composite_score:.1f} | {rec.momentum_score:.1f} | {rec.quality_score:.1f} | {rec.technical_score:.1f} | ${rec.current_price:.2f} |\n"
+            text += f"| {rec.symbol} | {rec.composite_score:.1f} | {rec.momentum_score:.1f} | {rec.quality_score:.1f} | {rec.technical_score:.1f} |\n"
         text += "\n"
     else:
         text += "📋 Current Holdings Scores:\n"
@@ -418,10 +474,10 @@ def print_analysis(trading_analysis, use_markdown: bool = False):
     # Top Alternatives
     if use_markdown:
         text += "## Stock Scores - Top Alternatives\n\n"
-        text += "| Symbol | Composite | Momentum | Quality | Technical | Price |\n"
-        text += "|--------|----------:|---------:|--------:|----------:|------:|\n"
+        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
+        text += "|--------|----------:|---------:|--------:|----------:|\n"
         for rec in trading_analysis.top_alternatives:
-            text += f"| {rec.symbol} | {rec.composite_score:.1f} | {rec.momentum_score:.1f} | {rec.quality_score:.1f} | {rec.technical_score:.1f} | ${rec.current_price:.2f} |\n"
+            text += f"| {rec.symbol} | {rec.composite_score:.1f} | {rec.momentum_score:.1f} | {rec.quality_score:.1f} | {rec.technical_score:.1f} |\n"
         text += "\n"
     else:
         text += "📋 Top Alternatives:\n"
@@ -446,13 +502,13 @@ def create_analysis_output_node(structured_llm, cfg: config.Config):
         analysis_context = ""
         for msg in state["messages"]:
             if isinstance(msg, AIMessage) and msg.content:
-                analysis_context += msg.content + "\n\n"
+                analysis_context += extract_content_as_string(msg.content) + "\n\n"
 
         # Get structured analysis prompt
         structured_prompt = prompts.get_trading_analysis_prompt(
             portfolio_cash=state["portfolio_cash"],
             portfolio_positions=state["portfolio_positions"],
-            analysis_context=analysis_context[-2000:],  # Limit context length
+            analysis_context=analysis_context,
             cfg=cfg,
         )
 
@@ -462,7 +518,7 @@ def create_analysis_output_node(structured_llm, cfg: config.Config):
         # Set the complete analysis from the last AI message
         last_message = state["messages"][-1]
         assert isinstance(last_message, AIMessage) and last_message.content, "Last message must be an AIMessage with content"
-        trading_analysis.complete_analysis = last_message.content
+        trading_analysis.complete_analysis = extract_content_as_string(last_message.content)
 
         # Store the structured analysis in state for later use
         state["trading_analysis"] = trading_analysis
@@ -500,8 +556,27 @@ def main(cfg: config.Config = None):
     # Setup logging
     config.setup_logging()
 
-    # Configure the LLM with deterministic settings
-    llm = ChatOpenAI(model=cfg.llm_model, temperature=cfg.llm_temperature, seed=cfg.llm_seed)
+    if "gpt" in cfg.llm_model:
+        # Configure the LLM with deterministic settings
+        if "pro" in cfg.llm_model:
+            llm = ChatOpenAI(
+                model=cfg.llm_model,
+                temperature=cfg.llm_temperature,
+            )
+        else:
+            llm = ChatOpenAI(
+                model=cfg.llm_model,
+                temperature=cfg.llm_temperature,
+                seed=cfg.llm_seed,
+            )
+    elif "gemini" in cfg.llm_model:
+        llm = ChatGoogleGenerativeAI(
+            model=cfg.llm_model,
+            temperature=cfg.llm_temperature,
+            convert_system_message_to_human=True,
+        )
+    else:
+        raise ValueError(f"Unsupported LLM model: {cfg.llm_model}")
 
     # Always use TradingAnalysis (trade_recommendations will be empty in scores-only mode)
     structured_llm = llm.with_structured_output(TradingAnalysis)
@@ -587,9 +662,9 @@ def main(cfg: config.Config = None):
                 final_state = state  # Keep track of final state
                 if node_name != "tools":  # Don't print tool outputs directly
                     logger.info(f"\n--- {node_name.upper()} ---")
-                    if state["messages"]:
-                        last_msg = state["messages"][-1]
-                        logger.debug(last_msg.content)
+                    # if state["messages"]:
+                    #     last_msg = state["messages"][-1]
+                    #     logger.debug(extract_content_as_string(last_msg.content))
 
         logger.info("\n✅ Trading session completed successfully!")
     except TimeoutError:
@@ -621,10 +696,32 @@ def main(cfg: config.Config = None):
         else:
             logger.info("📋 Trade execution disabled - portfolio file not updated")
 
-    # Save scores to memory (use same date as portfolio snapshot)
+    # Validate and filter scores before saving to memory
+    stock_db = StockHistoryDatabase(cfg)
+
+    prices = {}
+    # Validate holdings - all should exist since they're actual positions
+    validated_holdings = []
+    for score in trading_analysis.current_holdings_scores:
+        try:
+            prices[score.symbol] = stock_db.get_latest_price(score.symbol)
+            validated_holdings.append(score)
+        except AssertionError:
+            logger.warning(f"Skipping holding score for {score.symbol} - not found in database")
+
+    # Validate alternatives - filter out hallucinations
+    validated_alternatives = []
+    for score in trading_analysis.top_alternatives:
+        try:
+            prices[score.symbol] = stock_db.get_latest_price(score.symbol)
+            validated_alternatives.append(score)
+        except AssertionError:
+            logger.warning(f"Skipping alternative {score.symbol} - not found in database (possible hallucination)")
+
+    # Save validated scores to memory (use same date as portfolio snapshot)
     memory_db = MemoryDatabase(cfg)
-    memory_date = portfolio.prices_as_of if portfolio.prices_as_of else datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    memory_db.update_memory(memory_date, trading_analysis.current_holdings_scores, trading_analysis.top_alternatives)
+    memory_date = portfolio.prices_as_of
+    memory_db.update_memory(memory_date, validated_holdings, validated_alternatives, prices)
 
     return trading_analysis, final_portfolio
 

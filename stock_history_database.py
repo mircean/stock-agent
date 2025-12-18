@@ -4,8 +4,9 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, List
 
-import config
 import pandas as pd
+
+import config
 
 # Setup logging
 config.setup_logging()
@@ -69,10 +70,9 @@ class StockHistoryDatabase:
                 )
             conn.commit()
 
-    def insert_fundamentals(self, symbol: str, fundamentals: Dict):
+    def insert_fundamentals(self, symbol: str, fundamentals: Dict, date: datetime):
         """Insert fundamental data for a stock (writes to history table, view shows latest)"""
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
+        date = date.strftime("%Y-%m-%d")
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
@@ -152,10 +152,10 @@ class StockHistoryDatabase:
 
             conn.commit()
 
-    def insert_statistics(self, symbol: str, stats: Dict):
+    def insert_statistics(self, symbol: str, stats: Dict, date: datetime):
         """Insert stock statistics (writes to history table, view shows latest)"""
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+        date = date.strftime("%Y-%m-%d")
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
@@ -190,6 +190,35 @@ class StockHistoryDatabase:
             cursor = conn.cursor()
             cursor.execute("SELECT symbol FROM stocks")
             return [row[0] for row in cursor.fetchall()]
+
+    def get_latest_price(self, symbol: str) -> float:
+        """
+        Get the latest available close price for a symbol.
+
+        Args:
+            symbol: Stock symbol
+
+        Returns:
+            Latest close price for the symbol
+
+        Raises:
+            AssertionError: If no price data found for symbol
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT close FROM stock_prices
+                WHERE symbol = ?
+                ORDER BY date DESC
+                LIMIT 1
+                """,
+                (symbol,),
+            )
+            result = cursor.fetchone()
+
+        assert result, f"No price data found for {symbol}"
+        return float(result[0])
 
     def get_stock_data(self, symbol: str, start_date: str = None, end_date: str = None) -> Dict:
         """Retrieve comprehensive stock data"""
@@ -251,7 +280,7 @@ class StockHistoryDatabase:
         Args:
             years: Number of years of history to keep (default: 3)
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=years * 365)).strftime("%Y-%m-%d")
 

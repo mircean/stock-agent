@@ -6,11 +6,12 @@ Unit test for email generation and sending
 import unittest
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+
 import config
 from agent import StockScore, TradeRecommendation, TradingAnalysis
 from automation import generate_trading_email, send_email
-from portfolio import Portfolio, Lot
-from dotenv import load_dotenv
+from portfolio import Lot, Portfolio
 
 
 class TestEmailGeneration(unittest.TestCase):
@@ -22,12 +23,8 @@ class TestEmailGeneration(unittest.TestCase):
             complete_analysis="This is a test trading analysis with detailed market insights and recommendations.",
             summary="Test email with sample market analysis showing strong tech sector performance.",
             trade_recommendations=[
-                TradeRecommendation(
-                    action="BUY", symbol="AAPL", shares=10, price=175.50, reasoning="Strong iPhone sales and services growth", confidence="HIGH"
-                ),
-                TradeRecommendation(
-                    action="SELL", symbol="GOOGL", shares=5, price=2850.00, reasoning="Regulatory concerns and competition in search", confidence="MEDIUM"
-                ),
+                TradeRecommendation(action="BUY", symbol="AAPL", shares=10, reasoning="Strong iPhone sales and services growth", confidence="HIGH"),
+                TradeRecommendation(action="SELL", symbol="GOOG", shares=5, reasoning="Regulatory concerns and competition in search", confidence="MEDIUM"),
             ],
             market_outlook="Bullish - Expecting continued growth in AI and cloud sectors",
             risk_assessment="Key risks: (1) Rising interest rates. (2) Regulatory scrutiny on big tech. (3) Supply chain concerns for hardware manufacturers.",
@@ -57,7 +54,7 @@ class TestEmailGeneration(unittest.TestCase):
                 "current_price": 890.25,
                 "current_value": 13353.75,
             },
-            "GOOGL": {
+            "GOOG": {
                 "lots": [Lot(date="2025-01-01", shares=8, price_per_share=2800.0)],
                 "shares": 8,
                 "current_price": 2850.00,

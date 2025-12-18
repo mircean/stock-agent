@@ -20,16 +20,11 @@ LangGraph stock trading agent with the goal to outperform Nasdaq100
 
 ## Scripts
 Run `automation.py` to download the data and run the agent
-
-## Features
-
-- **Historical Analysis**: 3 years of NASDAQ 100 stock data (OHLCV, fundamentals, statistics)
-- **Market Intelligence**: Real-time news integration via web search
-- **Portfolio Management**: Track positions, cash, and performance ($10000 starting capital)
-- **Trading Constraints**: Long-only strategy, max 10 positions
-- **Data Storage**: Local SQLite, Postgresql databases for storing stock prices, portfolio, memory
-- **Sends email with the trading analysis**
+Automation.py does
+- downloads the latest stock data
+- updates the portfolio
+- runs the agent
+- sends an email with the agent analysis and trade recommendations
 
 ## Output
-
 The agent provides detailed market analysis and specific buy/sell recommendations with reasoning based on technical indicators, fundamental metrics, and current market conditions.

@@ -4,12 +4,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-import config
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from stock_history_database import StockHistoryDatabase
 from tqdm import tqdm
+
+import config
+from stock_history_database import StockHistoryDatabase
 
 # Setup logging
 config.setup_logging()
@@ -46,11 +47,13 @@ class StockFetcher:
         )
         assert not history.empty, f"No historical data available for {symbol}"
 
+        latest_date = history.index[-1].to_pydatetime()
+
         # If market is open (REGULAR), add today's intraday data
         # We reuse the "Close" column for the live price even though the day hasn't closed yet
         # This allows existing queries to work without schema changes
         if info.get("marketState") == "REGULAR":
-            today = pd.Timestamp(datetime.now(timezone.utc).date())
+            latest_date = pd.Timestamp(datetime.now(timezone.utc).date())
 
             # Create today's row with live price in Close column
             new_row = pd.DataFrame(
@@ -62,7 +65,7 @@ class StockFetcher:
                     "Adj Close": [float(0.0)],  # Cannot calculate until day closes
                     "Volume": [float(0.0)],  # Volume incomplete during trading
                 },
-                index=[today],
+                index=[latest_date],
             )
             history = pd.concat([history, new_row])
             logger.debug(f"Added intraday data for {symbol}: Close=${float(info['regularMarketPrice']):.2f} (live price, market open)")
@@ -78,6 +81,7 @@ class StockFetcher:
             "info": info,
             "history": history,
             "actions": actions,
+            "latest_date": latest_date,
         }
 
     def process_stock_data(self, stock_data: Dict) -> bool:
@@ -148,7 +152,7 @@ class StockFetcher:
                 cleaned_fundamentals[key] = value
 
         if cleaned_fundamentals:
-            self.db.insert_fundamentals(symbol, cleaned_fundamentals)
+            self.db.insert_fundamentals(symbol, cleaned_fundamentals, stock_data["latest_date"])
 
         # Prepare statistics data
         statistics = {
@@ -177,7 +181,7 @@ class StockFetcher:
                 cleaned_statistics[key] = value
 
         if cleaned_statistics:
-            self.db.insert_statistics(symbol, cleaned_statistics)
+            self.db.insert_statistics(symbol, cleaned_statistics, stock_data["latest_date"])
 
     def fetch_single_stock(self, symbol: str) -> bool:
         """Fetch and process data for a single stock"""

@@ -23,6 +23,7 @@ class MemoryDatabase:
 
     def __init__(self, cfg: config.Config):
         self.db_path = cfg.memory_db_name
+        self.cfg = cfg
         self.init_database()
 
     def init_database(self):
@@ -37,7 +38,7 @@ class MemoryDatabase:
             cursor.executescript(schema_sql)
             conn.commit()
 
-    def update_memory(self, date: str, holdings_scores: List, alternatives_scores: List):
+    def update_memory(self, date: str, holdings_scores: List, alternatives_scores: List, prices: Dict):
         """Save stock scores for holdings and alternatives"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -58,7 +59,7 @@ class MemoryDatabase:
                         score.momentum_score,
                         score.quality_score,
                         score.technical_score,
-                        score.current_price,
+                        prices[score.symbol],
                         True,  # is_holding
                     ),
                 )
@@ -79,7 +80,7 @@ class MemoryDatabase:
                         score.momentum_score,
                         score.quality_score,
                         score.technical_score,
-                        score.current_price,
+                        prices[score.symbol],
                         False,  # is_holding
                     ),
                 )
@@ -479,6 +480,24 @@ class MemoryDatabase:
                     "best_alternative_score": round(max(alternatives_scores), 2) if alternatives_scores else None,
                 },
             }
+
+    def remove_data_after_date(self, date: str):
+        """
+        Remove all memory data from specified date onward (useful for backtesting setup).
+
+        Args:
+            date: Date in YYYY-MM-DD format. All data from this date onward will be deleted.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            # Remove agent scores from date onward
+            cursor.execute("DELETE FROM agent_scores WHERE date >= ?", (date,))
+            deleted_scores = cursor.rowcount
+
+            conn.commit()
+
+            logger.info(f"Removed {deleted_scores} agent score records from {date} onward")
 
 
 if __name__ == "__main__":
