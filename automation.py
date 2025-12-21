@@ -92,14 +92,24 @@ def main():
     start_portfolio = portfolio.Portfolio.load(cfg)
     start_portfolio.update_stock_prices()
 
+    # Step 2.1: Check if market data is current (unless configured to run when market is closed)
+    if not cfg.run_when_market_closed:
+        start_portfolio = portfolio.Portfolio.load(cfg)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        if start_portfolio.prices_as_of != today:
+            logger.info(f"Market data is not from today (latest: {start_portfolio.prices_as_of}, today: {today}). Skipping agent run.")
+            logger.info("Set --run-when-market-closed to override this behavior.")
+            return
+
     # Step 3: Run trading agent
     logger.info("Running trading agent...")
-    trading_analysis, final_portfolio = agent.main(cfg)
+    trading_output, final_portfolio = agent.main(cfg)
     logger.info("Trading agent completed successfully")
 
     # Step 4: Send email
     subject = f"Daily Trading Report - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-    body = generate_trading_email(trading_analysis, start_portfolio, final_portfolio)
+    body = generate_trading_email(trading_output, start_portfolio, final_portfolio)
     send_email(subject, body)
 
     logger.info("Daily trading report sent to email")

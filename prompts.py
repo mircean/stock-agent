@@ -4,10 +4,44 @@ Prompts for the Stock Trading Agent
 
 import config
 
+"""
+not part of the latest prompt
 
-def get_database_schema() -> str:
+Your analysis will proceed in three phases:
+1. **Research** - Gather fresh data and calculate current scores
+2. **Memory** - Review historical score patterns and trends
+3. **Trade** - Make final buy/sell decisions using both contexts
+"""
+
+
+def get_system_prompt(portfolio_cash: float, portfolio_positions: dict, data_as_of_date: str, cfg: config.Config) -> str:
     """
-    Get the database schema documentation.
+    Get the main system prompt that introduces the agent.
+
+    Args:
+        portfolio_cash: Available cash amount
+        portfolio_positions: Current stock positions
+        data_as_of_date: Date when the stock data was last updated (YYYY-MM-DD)
+        cfg: Configuration object with trading parameters
+
+    Returns:
+        Formatted system prompt string
+    """
+    return f"""You are a stock trading agent with the following constraints:
+- Starting capital: ${cfg.default_cash}
+- Maximum positions: {cfg.max_positions} stocks
+- Strategy: Long-only, buy and hold good stocks, sell inferior stocks
+- Goal: Beat NASDAQ-100 performance
+
+Current Portfolio:
+- Cash: ${portfolio_cash:.2f}
+- Positions: {portfolio_positions}
+"""
+
+
+def get_stock_database_schema() -> str:
+    """
+    Get the stock database schema documentation.
 
     Returns:
         Database schema documentation string
@@ -162,9 +196,81 @@ LIMIT 30;
 """
 
 
-def get_system_prompt(portfolio_cash: float, portfolio_positions: dict, data_as_of_date: str, cfg: config.Config) -> str:
+def get_memory_database_schema() -> str:
     """
-    Get the main system prompt for the trading agent.
+    Get the memory database schema documentation.
+
+    Returns:
+        Database schema documentation string
+    """
+    return """# Memory Database Schema
+
+**Memory Database Schema:**
+```sql
+CREATE TABLE agent_scores (
+    date DATE,
+    symbol TEXT,
+    composite_score REAL,
+    momentum_score REAL,
+    quality_score REAL,
+    technical_score REAL,
+    current_price REAL,
+    is_holding BOOLEAN,  -- 1 = current holding, 0 = alternative
+    PRIMARY KEY (date, symbol)
+);
+```
+
+**Common Query Patterns:**
+
+**Find replacement candidates for a specific holding:**
+```sql
+-- Compare alternatives vs a specific holding (e.g., AAPL)
+SELECT
+    a.symbol,
+    AVG(a.composite_score) as alternative_avg,
+    AVG(h.composite_score) as holding_avg,
+    AVG(a.composite_score) - AVG(h.composite_score) as score_gap
+FROM agent_scores a
+CROSS JOIN agent_scores h
+WHERE a.is_holding = 0
+  AND h.symbol = 'AAPL'
+  AND a.date >= date('now', '-7 days')
+  AND h.date >= date('now', '-7 days')
+GROUP BY a.symbol
+HAVING score_gap > 5
+ORDER BY score_gap DESC
+LIMIT 10;
+```
+
+**Analyze score component breakdown:**
+```sql
+-- Compare momentum vs quality vs technical scores for a stock
+SELECT date,
+       momentum_score,
+       quality_score,
+       technical_score,
+       composite_score
+FROM agent_scores
+WHERE symbol = 'NVDA'
+  AND date >= date('now', '-14 days')
+ORDER BY date DESC;
+```
+
+**Interpreting Analytical Tool Metrics**:
+- **trend_slope**: >0.5 = rising, <-0.5 = declining, ~0 = stable
+- **score_volatility**: <5 = stable, 5-10 = moderate, >10 = volatile
+- **trend_strength**: >0.7 = strong trend, 0.3-0.7 = moderate, <0.3 = weak
+
+**Parameter Guidance**:
+- **days**: 7-14 for recent trends, 21+ for longer patterns
+
+Historical patterns reveal momentum shifts invisible in single-day data.
+"""
+
+
+def get_research_prompt(portfolio_cash: float, portfolio_positions: dict, data_as_of_date: str, cfg: config.Config) -> str:
+    """
+    Get the research prompt for Phase 1.
 
     Args:
         portfolio_cash: Available cash amount
@@ -173,66 +279,29 @@ def get_system_prompt(portfolio_cash: float, portfolio_positions: dict, data_as_
         cfg: Configuration object with trading parameters
 
     Returns:
-        Formatted system prompt string
+        Formatted research prompt string
     """
-    return f"""You are a stock trading agent with the following constraints:
-- Starting capital: ${cfg.default_cash}
-- Maximum positions: {cfg.max_positions} stocks
-- Strategy: Long-only, buy and hold good stocks, sell inferior stocks
-- Goal: Beat NASDAQ performance
+    return f"""# PHASE 1: RESEARCH
 
-Analyze the market, find good investment opportunities, and make trading decisions.
-If you find a stock that is better than any stocks in the current portfolio, sell the inferior stock and buy the better one.
-If the stocks in the current portfolio are the best, do not make any transactions.
-Do not necessarily use all the cash to buy stocks, buy only stocks that are worth it.
-Avoid excessive trading.
+Your task: Gather fresh market data and calculate scores for holdings and alternatives.
 
-{get_database_schema()}
+**IMPORTANT:**
+- Focus solely on research and scoring
+- Do NOT make trading decisions
+- All stock data in the database is current as of {data_as_of_date}
 
-**IMPORTANT: All stock data in the database is current as of {data_as_of_date}.**
+{get_stock_database_schema()}
 
-# UNDERSTANDING YOUR TOOLS
+# YOUR TOOLS
 
-You have two complementary types of tools:
-
-**DATA GATHERING TOOLS**:
 - `run_sql`: Queries the NASDAQ database with 3 years of price history, fundamentals, and statistics
 - `search_web`: Retrieves current market news, sentiment, and developments
 
-Use these to detect gather raw data about stocks, markets, and trends.
+# WORKFLOW
 
-**MEMORY ANALYSIS TOOLS**:
-- `analyze_stock_trends`: Analyze score trends, volatility, and sustained patterns for specific stocks
-- `compare_portfolio_performance`: Compare performance metrics across current portfolio stocks
-- `find_replacement_opportunities`: Find holdings with clearly better alternatives available
-- `find_stocks_to_sell`: Identify holdings with declining performance patterns for sell evaluation
-- `find_stocks_to_buy`: Identify top-scoring non-holdings with strong patterns for buy evaluation
-- `get_confidence_metrics`: Assess trading decision confidence based on historical patterns
-
-Use these to gather trends. Memory tools analyze historical patterns from your previous analyses and reveal momentum shifts you can't see from single-day data.
-
-Both types are essential: data tools provide current facts, memory tools provide historical patterns.
-
-**Memory Tool Metrics Interpretation**:
-- **trend_slope**: >0.5 = rising, <-0.5 = declining, ~0 = stable
-- **score_volatility**: <5 = stable, 5-10 = moderate, >10 = volatile
-- **trend_strength**: >0.7 = strong trend, 0.3-0.7 = moderate, <0.3 = weak
-- **performance_gap**: >10 = outperforming, -5 to +5 = comparable, <-10 = underperforming
-
-**Parameter Guidance for Memory Tools**:
-- **days**: 7-14 for recent trends, 21+ for longer patterns
-- **min_gap** in find_replacement_opportunities: 3-5 aggressive, 5-8 balanced, 8+ conservative
-- **min_score_threshold** in find_stocks_to_sell: 50-60 strict, 60-70 balanced
-- **min_score_threshold** in find_stocks_to_buy: 75-80 quality, 80+ premium
-- **top_n** in find_stocks_to_buy: 5-10 to focus on best opportunities
-
-# ANALYSIS WORKFLOW
-
-1. **Gather fresh data** using run_sql to query price momentum, fundamentals, technical indicators, and risk metrics
-2. **Check market context** using search_web for recent news, sentiment, sector trends, and red flags
-3. **Add historical context** using memory tools as needed to understand patterns and trends
-4. **Calculate scores** for all stocks you're evaluating (holdings and alternatives)
-5. **Make decisions** based on comprehensive analysis combining fresh data with historical context
+1. **Gather fresh data** - Use run_sql to query price momentum, fundamentals, technical indicators, and risk metrics
+2. **Check market context** - Use search_web for recent news, sentiment, sector trends, and red flags
+3. **Calculate scores** - Based on your data analysis, calculate scores for current holdings and promising alternatives
 
 # SCORING METHODOLOGY
 
@@ -242,41 +311,74 @@ Rank candidates using this scoring system:
 - Technical score (0-100): Price vs 50-day and 200-day moving averages
 - Composite score = (Momentum × 0.4) + (Quality × 0.4) + (Technical × 0.2)
 
-**Critical**:
-- Only score stocks that exist in the NASDAQ-100 database. Verify stocks exist using SQL queries before scoring them.
-- Calculate each component score using signals from your SQL queries or news, not exclusively from previous memory.
-- All scores must be between 0 and 100. These scores are saved to memory for performance tracking over time.
+Requirements:
+- Only score stocks that exist in the NASDAQ-100 database
+- Calculate each component score using signals from your SQL queries and news
+- All scores must be between 0 and 100
 
-Display scores in this format:
-CURRENT HOLDINGS:
-- SYMBOL: Composite XX.X (Momentum: XX.X, Quality: XX.X, Technical: XX.X)
-
-TOP ALTERNATIVES:
-- SYMBOL: Composite XX.X (Momentum: XX.X, Quality: XX.X, Technical: XX.X) - [Brief reason]
-
-# DECISION RULES
-
-- No stock more than 35% of portfolio value (diversification)
-- No hard rule but try to avoid stocks less than 5% of portfolio value (avoid immaterial positions)
-- SELL a holding if any alternative scores significantly better
-- SELL half of a holding if any alternative scores moderately better
-- BUY the top scoring stocks (holdings or alternatives)
-- Buying fractions of shares is not allowed
-
-Consider sustained trends and portfolio-wide performance patterns before making trading decisions.
-
-# CURRENT PORTFOLIO
-
-- Cash: ${portfolio_cash:.2f}
-- Positions: {portfolio_positions}
-
-After your analysis, provide specific BUY/SELL recommendations with stock symbol, number of shares, and reasoning.
+When you have calculated scores for holdings and alternatives, stop calling tools and summarize your findings.
 """
 
 
-def get_trading_analysis_prompt(portfolio_cash: float, portfolio_positions: dict, analysis_context: str, cfg: config.Config) -> str:
+def get_memory_prompt(portfolio_cash: float, portfolio_positions: dict, research_output, cfg: config.Config) -> str:
     """
-    Get the prompt for structured trading analysis output.
+    Get the prompt for Phase 2: Memory.
+
+    Args:
+        portfolio_cash: Available cash amount
+        portfolio_positions: Current stock positions
+        research_output: Structured output from Phase 1 with scored stocks
+        cfg: Configuration object
+
+    Returns:
+        Formatted prompt for memory phase
+    """
+    # Format the stocks from Phase 1
+    holdings_list = ", ".join([score.symbol for score in research_output.current_holdings_scores])
+    alternatives_list = ", ".join([score.symbol for score in research_output.top_alternatives])
+
+    return f"""# PHASE 2: MEMORY
+
+You have completed calculating fresh scores. Now analyze historical score patterns to understand trends.
+
+**IMPORTANT:**
+- Do NOT make trading decisions
+- Focus solely on identifying trends and patterns in historical data
+- Analyze ONLY the stocks scored in Phase 1 (listed below)
+
+# STOCKS TO ANALYZE
+
+**Current Holdings:** {holdings_list}
+**Top Alternatives:** {alternatives_list}
+
+# YOUR TASK
+
+Use memory tools to analyze multi-day patterns for these specific stocks. Focus on:
+1. How current holdings' scores have trended over the past 7-14 days
+2. Which alternatives show sustained strong scores
+3. Stocks with declining score patterns
+4. Stocks with rising score patterns
+
+# YOUR TOOLS
+
+**ANALYTICAL TOOLS** (for complex calculations):
+- `analyze_stock_trends`: Analyze score trends, volatility, and sustained patterns for specific stocks
+  - Returns: trend_slope, score_volatility, trend_strength (R²), avg_score
+- `compare_portfolio_performance`: Compare performance metrics across current portfolio stocks
+  - Returns: avg_score, trend_slope, score_volatility for each stock
+
+**SQL TOOL** (for flexible queries):
+- `run_memory_sql`: Query historical stock scores for custom analysis
+
+{get_memory_database_schema()}
+
+When you have gathered sufficient historical context, stop calling tools and summarize the key patterns you found.
+"""
+
+
+def get_trade_prompt(portfolio_cash: float, portfolio_positions: dict, analysis_context: str, cfg: config.Config) -> str:
+    """
+    Get the prompt for Phase 3: Trade.
 
     Args:
         portfolio_cash: Available cash amount
@@ -287,17 +389,31 @@ def get_trading_analysis_prompt(portfolio_cash: float, portfolio_positions: dict
     Returns:
         Formatted prompt for structured output
     """
-    return f"""Based on your comprehensive market analysis, provide a complete structured trading analysis.
+    return f"""# PHASE 3: TRADE
 
-Current Portfolio Context:
-- Cash Available: ${portfolio_cash:.2f}
-- Current Positions: {portfolio_positions}
+You have completed both research (fresh scores) and memory (historical patterns). Now make final trading decisions.
+
+Current Portfolio:
+- Cash: ${portfolio_cash:.2f}
+- Positions: {portfolio_positions}
 - Max Positions: {cfg.max_positions}
 
-Analysis Context from your research:
+# DECISION RULES
+
+- No stock more than 35% of portfolio value (diversification)
+- Avoid stocks less than 5% of portfolio value (immaterial positions)
+- SELL a holding if an alternative scores significantly better with sustained strength
+- SELL half if an alternative scores moderately better
+- BUY top scoring stocks (holdings or alternatives) that show strong patterns
+- Buying fractions of shares is not allowed
+
+# YOUR ANALYSIS SO FAR
+
 {analysis_context}
 
-Please provide:
+# PROVIDE STRUCTURED OUTPUT
+
+Based on combining fresh scores with historical patterns, provide:
 
 1. **Summary**: A concise overview of your market analysis and key findings
 
@@ -308,15 +424,15 @@ Please provide:
    - Reasoning: Detailed justification for the recommendation
    - Confidence: HIGH, MEDIUM, or LOW confidence level
 
-3. **Current Holdings Scores**: Provide structured scores for ALL current positions:
+3. **Current Holdings Scores**: Provide the scores you calculated in Phase 1 for ALL current positions:
    - symbol, composite_score, momentum_score, quality_score, technical_score
-   - All scores must be 0-100 based on actual data from your SQL queries and news searches
+   - All scores must be 0-100
 
-4. **Top Alternatives**: Provide structured scores for TOP {cfg.top_alternatives_count} highest-scoring stocks NOT currently held:
+4. **Top Alternatives**: Provide the scores you calculated in Phase 1 for TOP {cfg.top_alternatives_count} highest-scoring stocks NOT currently held:
    - symbol, composite_score, momentum_score, quality_score, technical_score
-   - All scores must be 0-100 based on actual data from your SQL queries and news searches
+   - All scores must be 0-100
 
-IMPORTANT: These scores are saved to memory for performance tracking over time. Calculate each component score using signals from your SQL queries or news, not exclusively from previous memory.
+Note: These scores will be saved to memory for tracking performance trends over time.
 
 5. **Market Outlook**: Overall market sentiment (Bull/Bear/Neutral) with reasoning
 6. **Risk Assessment**: Key risks and concerns identified in your analysis

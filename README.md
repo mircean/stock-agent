@@ -6,9 +6,9 @@ LangGraph stock trading agent with the goal to outperform Nasdaq100
 
 <img width="1400" height="866" alt="image" src="https://github.com/user-attachments/assets/49dd26f2-02f4-48ec-b6fd-d8e1bbd1956f" />
 
-## Simulations 
+## Simulations
 
-<img width="1399" height="868" alt="image" src="https://github.com/user-attachments/assets/762927be-0da6-48c1-bce9-420296229403" />
+![Simulations](images/251220_simulations_gemini_2.png)
 
 ## Setup
 

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 import config
-from agent import StockScore, TradeRecommendation, TradingAnalysis
+from agent import StockScore, TradeRecommendation, TradingOutput
 from automation import generate_trading_email, send_email
 from portfolio import Lot, Portfolio
 
@@ -19,7 +19,7 @@ class TestEmailGeneration(unittest.TestCase):
 
     def setUp(self):
         """Set up test data"""
-        self.trading_analysis = TradingAnalysis(
+        self.trading_analysis = TradingOutput(
             complete_analysis="This is a test trading analysis with detailed market insights and recommendations.",
             summary="Test email with sample market analysis showing strong tech sector performance.",
             trade_recommendations=[

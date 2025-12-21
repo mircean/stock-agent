@@ -18,3 +18,4 @@ launchd.out
 launchd.err
 
 msal_cache.json
+.DS_Store

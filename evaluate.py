@@ -106,29 +106,35 @@ def main():
     logger.info(f"Initial cash: ${cfg.default_cash:,.2f}")
     logger.info("=" * 80 + "\n")
 
-    # TODO: add option to continie from a previous results file
+    # Check if we should continue from previous results
     simulations_filename = "simulation_results.json"
-    simulations_json = {
-        "metadata": {
-            "time_period": time_period,
-            "num_simulations": num_simulations,
-            "num_trading_dates": len(trading_dates),
-            "start_date": trading_dates[0],
-            "end_date": trading_dates[-1],
-            "initial_cash": cfg.default_cash,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
-        "simulations": [],
-    }
-    logger.info(f"Results will be saved to: {simulations_filename}")
-    with open(simulations_filename, "w") as f:
-        json.dump(simulations_json, f, indent=2)
+    start_sim_id = 0
 
-    # Store results from all simulations
-    all_simulations = []
+    if cfg.continue_simulation and os.path.exists(simulations_filename):
+        logger.info(f"Found existing {simulations_filename}, checking for incomplete simulations...")
+        with open(simulations_filename, "r") as f:
+            simulations_json = json.load(f)
+
+        # Count completed simulations
+        start_sim_id = len(simulations_json["simulations"])
+        assert start_sim_id <= num_simulations, "Start simulation ID must be less than number of simulations"
+        logger.info(f"Resuming from simulation {start_sim_id + 1}/{num_simulations}")
+    else:
+        # Create new results file
+        simulations_json = {
+            "metadata": {
+                "time_period": time_period,
+                "num_simulations": num_simulations,
+                "num_trading_dates": len(trading_dates),
+                "start_date": trading_dates[0],
+                "end_date": trading_dates[-1],
+            },
+            "simulations": [],
+        }
+        logger.info(f"Results will be saved to: {simulations_filename}")
 
     # Run multiple simulations
-    for sim_id in range(num_simulations):
+    for sim_id in range(start_sim_id, num_simulations):
         logger.info("\n" + "=" * 80)
         logger.info(f"SIMULATION {sim_id + 1}/{num_simulations}")
         logger.info("=" * 80 + "\n")
@@ -189,16 +195,17 @@ def main():
         logger.info(f"Final value: ${final_value:,.2f}")
         logger.info(f"Total return: {total_return:+.2f}%")
 
-        all_simulations.append(portfolio_history)
-
-        # Save this simulation result to file immediately
         # Convert date objects to strings for JSON serialization
         portfolio_history_json = []
         for record in portfolio_history:
             record_json = record.copy()
             record_json["date"] = str(record["date"])
             portfolio_history_json.append(record_json)
+
+        # Add to results (use JSON format with string dates)
         simulations_json["simulations"].append(portfolio_history_json)
+
+        # Save updated results to file
         with open(simulations_filename, "w") as f:
             json.dump(simulations_json, f, indent=2)
         logger.info(f"Saved simulation {sim_id + 1} results to {simulations_filename}")
@@ -217,7 +224,7 @@ def main():
 
     # Create performance chart
     logger.info("Creating performance chart...")
-    chart_portfolio.create_performance_chart(all_simulations, nasdaq_history)
+    chart_portfolio.create_performance_chart(simulations_json["simulations"], nasdaq_history)
 
 
 if __name__ == "__main__":

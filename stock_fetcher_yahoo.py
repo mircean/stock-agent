@@ -84,7 +84,7 @@ class StockFetcher:
             "latest_date": latest_date,
         }
 
-    def process_stock_data(self, stock_data: Dict) -> bool:
+    def process_stock_data(self, stock_data: Dict) -> None:
         """Process and store stock data in database"""
         symbol = stock_data["symbol"]
         info = stock_data["info"]
@@ -183,7 +183,7 @@ class StockFetcher:
         if cleaned_statistics:
             self.db.insert_statistics(symbol, cleaned_statistics, stock_data["latest_date"])
 
-    def fetch_single_stock(self, symbol: str) -> bool:
+    def fetch_single_stock(self, symbol: str) -> None:
         """Fetch and process data for a single stock"""
         logger.info(f"Fetching data for {symbol}")
         for _ in range(3):

@@ -32,9 +32,11 @@ class Config:
     # Agent behavior
     execute_trades: bool = True  # Whether to actually execute trades and update portfolio file
     skip_data_download: bool = False  # Skip data synchronization step
+    run_when_market_closed: bool = False  # Run agent even if market data is not from today
 
     # Evaluation parameters
     as_of_date: str = None  # Date to run agent for (YYYY-MM-DD), used for memory tracking
+    continue_simulation: bool = False  # Continue from previous simulation results if available
 
     # Model settings
     # llm_model: str = "gpt-5.2"
