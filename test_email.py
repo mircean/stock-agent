@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 import config
-from agent import StockScore, TradeRecommendation, TradingOutput
+from agent import ResearchOutput, StockScore, TradeRecommendation, TradingOutput
 from automation import generate_trading_email, send_email
 from portfolio import Lot, Portfolio
 
@@ -19,24 +19,30 @@ class TestEmailGeneration(unittest.TestCase):
 
     def setUp(self):
         """Set up test data"""
-        self.trading_analysis = TradingOutput(
-            complete_analysis="This is a test trading analysis with detailed market insights and recommendations.",
-            summary="Test email with sample market analysis showing strong tech sector performance.",
-            trade_recommendations=[
-                TradeRecommendation(action="BUY", symbol="AAPL", shares=10, reasoning="Strong iPhone sales and services growth", confidence="HIGH"),
-                TradeRecommendation(action="SELL", symbol="GOOG", shares=5, reasoning="Regulatory concerns and competition in search", confidence="MEDIUM"),
-            ],
-            market_outlook="Bullish - Expecting continued growth in AI and cloud sectors",
-            risk_assessment="Key risks: (1) Rising interest rates. (2) Regulatory scrutiny on big tech. (3) Supply chain concerns for hardware manufacturers.",
-            current_holdings_scores=[
-                StockScore(symbol="MSFT", composite_score=88.5, momentum_score=85.0, quality_score=92.0, technical_score=87.5, current_price=420.75),
-                StockScore(symbol="NVDA", composite_score=95.0, momentum_score=98.5, quality_score=89.5, technical_score=96.0, current_price=890.25),
-            ],
-            top_alternatives=[
-                StockScore(symbol="AMD", composite_score=82.0, momentum_score=85.5, quality_score=78.0, technical_score=82.5, current_price=125.40),
-                StockScore(symbol="TSLA", composite_score=79.5, momentum_score=75.0, quality_score=82.0, technical_score=82.0, current_price=248.90),
-            ],
-        )
+        # Create state dict with all required fields
+        self.state = {
+            "trading_analysis": "This is a test trading analysis with detailed market insights and recommendations.",
+            "trading_output": TradingOutput(
+                summary="Test email with sample market analysis showing strong tech sector performance.",
+                trade_recommendations=[
+                    TradeRecommendation(action="BUY", symbol="AAPL", shares=10, agent_estimated_price=180.50, reasoning="Strong iPhone sales and services growth", confidence="HIGH"),
+                    TradeRecommendation(action="SELL", symbol="GOOG", shares=5, agent_estimated_price=2850.00, reasoning="Regulatory concerns and competition in search", confidence="MEDIUM"),
+                ],
+                market_outlook="Bullish - Expecting continued growth in AI and cloud sectors",
+                risk_assessment="Key risks: (1) Rising interest rates. (2) Regulatory scrutiny on big tech. (3) Supply chain concerns for hardware manufacturers.",
+            ),
+            "research_output": ResearchOutput(
+                current_holdings_scores=[
+                    StockScore(symbol="MSFT", composite_score=88.5, momentum_score=85.0, quality_score=92.0, technical_score=87.5, current_price=420.75),
+                    StockScore(symbol="NVDA", composite_score=95.0, momentum_score=98.5, quality_score=89.5, technical_score=96.0, current_price=890.25),
+                ],
+                top_alternatives=[
+                    StockScore(symbol="AMD", composite_score=82.0, momentum_score=85.5, quality_score=78.0, technical_score=82.5, current_price=145.30),
+                    StockScore(symbol="TSLA", composite_score=79.5, momentum_score=75.0, quality_score=82.0, technical_score=82.0, current_price=385.50),
+                ],
+            ),
+            "approval_output": None,
+        }
 
         cfg = config.Config()
         self.portfolio = Portfolio(cfg)
@@ -67,7 +73,7 @@ class TestEmailGeneration(unittest.TestCase):
 
     def test_email_generation_works(self):
         """Test that email generation doesn't crash and produces output"""
-        body = generate_trading_email(self.trading_analysis, self.portfolio, None)
+        body = generate_trading_email(self.state, self.portfolio, None)
 
         # Basic checks
         self.assertIsInstance(body, str)
@@ -84,7 +90,7 @@ class TestEmailGeneration(unittest.TestCase):
         """Send a test trading email"""
         # Generate email
         subject = f"TEST Trading Report - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-        body = generate_trading_email(self.trading_analysis, self.portfolio, None)
+        body = generate_trading_email(self.state, self.portfolio, None)
 
         # Send email using the shared method
         send_email(subject, body)

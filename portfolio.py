@@ -162,6 +162,26 @@ class Portfolio:
             "nasdaq100": self.nasdaq100,
         }
 
+    def get_prompt_summary(self) -> dict:
+        """Get portfolio summary formatted for LLM prompts.
+
+        Returns:
+            dict with keys:
+                - cash: float
+                - positions: dict[symbol] -> {"shares": int, "price": float}
+        """
+        positions_summary = {}
+        for symbol, position in self.positions.items():
+            positions_summary[symbol] = {
+                "shares": position["shares"],
+                "price": position["current_price"],
+            }
+
+        return {
+            "cash": self.cash,
+            "positions": positions_summary
+        }
+
     def print(self, label: str = "Portfolio", use_markdown: bool = False) -> str:
         """Build portfolio string in a consistent format."""
         # Header

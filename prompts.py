@@ -2,8 +2,6 @@
 Prompts for the Stock Trading Agent
 """
 
-import config
-
 """
 not part of the latest prompt
 
@@ -14,28 +12,27 @@ Your analysis will proceed in three phases:
 """
 
 
-def get_system_prompt(portfolio_cash: float, portfolio_positions: dict, data_as_of_date: str, cfg: config.Config) -> str:
+def get_system_prompt(portfolio) -> str:
     """
     Get the main system prompt that introduces the agent.
 
     Args:
-        portfolio_cash: Available cash amount
-        portfolio_positions: Current stock positions
-        data_as_of_date: Date when the stock data was last updated (YYYY-MM-DD)
-        cfg: Configuration object with trading parameters
+        portfolio: Portfolio object with cash, positions, and configuration
 
     Returns:
         Formatted system prompt string
     """
+    portfolio_summary = portfolio.get_prompt_summary()
+
     return f"""You are a stock trading agent with the following constraints:
-- Starting capital: ${cfg.default_cash}
-- Maximum positions: {cfg.max_positions} stocks
+- Starting capital: ${portfolio.cfg.default_cash}
+- Maximum positions: {portfolio.cfg.max_positions} stocks
 - Strategy: Long-only, buy and hold good stocks, sell inferior stocks
 - Goal: Beat NASDAQ-100 performance
 
 Current Portfolio:
-- Cash: ${portfolio_cash:.2f}
-- Positions: {portfolio_positions}
+- Cash: ${portfolio_summary['cash']:.2f}
+- Positions: {portfolio_summary['positions']}
 """
 
 
@@ -196,6 +193,55 @@ LIMIT 30;
 """
 
 
+def get_research_prompt(portfolio) -> str:
+    """
+    Get the research prompt for market research and scoring.
+
+    Args:
+        portfolio: Portfolio object with prices_as_of date
+
+    Returns:
+        Formatted research prompt string
+    """
+    return f"""# MARKET RESEARCH & SCORING
+
+Your task: Gather fresh market data and calculate scores for holdings and alternatives.
+
+**IMPORTANT:**
+- Focus solely on research and scoring
+- Do NOT make trading decisions
+- All stock data in the database is current as of {portfolio.prices_as_of or "unknown"}
+
+{get_stock_database_schema()}
+
+# YOUR TOOLS
+
+- `run_sql`: Queries the NASDAQ database with 3 years of price history, fundamentals, and statistics
+- `search_web`: Retrieves current market news, sentiment, and developments
+
+# WORKFLOW
+
+1. **Gather fresh data** - Use run_sql to query price momentum, fundamentals, technical indicators, and risk metrics
+2. **Check market context** - Use search_web for recent news, sentiment, sector trends, and red flags
+3. **Calculate scores** - Based on your data analysis, calculate scores for current holdings and promising alternatives
+
+# SCORING METHODOLOGY
+
+Rank candidates using this scoring system:
+- Momentum score (0-100): Position in 6-month return ranking
+- Quality score (0-100): Based on ROE, profit margins, debt levels
+- Technical score (0-100): Price vs 50-day and 200-day moving averages
+- Composite score = (Momentum × 0.4) + (Quality × 0.4) + (Technical × 0.2)
+
+Requirements:
+- Only score stocks that exist in the NASDAQ-100 database
+- Calculate each component score using signals from your SQL queries and news
+- All scores must be between 0 and 100
+
+When you have calculated scores for holdings and alternatives, stop calling tools and summarize your findings.
+"""
+
+
 def get_memory_database_schema() -> str:
     """
     Get the memory database schema documentation.
@@ -268,88 +314,28 @@ Historical patterns reveal momentum shifts invisible in single-day data.
 """
 
 
-def get_research_prompt(portfolio_cash: float, portfolio_positions: dict, data_as_of_date: str, cfg: config.Config) -> str:
+def get_memory_prompt(research_output) -> str:
     """
-    Get the research prompt for Phase 1.
+    Get the prompt for historical analysis.
 
     Args:
-        portfolio_cash: Available cash amount
-        portfolio_positions: Current stock positions
-        data_as_of_date: Date when the stock data was last updated (YYYY-MM-DD)
-        cfg: Configuration object with trading parameters
+        research_output: Structured output from research with scored stocks
 
     Returns:
-        Formatted research prompt string
+        Formatted prompt for memory analysis
     """
-    return f"""# PHASE 1: RESEARCH
-
-Your task: Gather fresh market data and calculate scores for holdings and alternatives.
-
-**IMPORTANT:**
-- Focus solely on research and scoring
-- Do NOT make trading decisions
-- All stock data in the database is current as of {data_as_of_date}
-
-{get_stock_database_schema()}
-
-# YOUR TOOLS
-
-- `run_sql`: Queries the NASDAQ database with 3 years of price history, fundamentals, and statistics
-- `search_web`: Retrieves current market news, sentiment, and developments
-
-# WORKFLOW
-
-1. **Gather fresh data** - Use run_sql to query price momentum, fundamentals, technical indicators, and risk metrics
-2. **Check market context** - Use search_web for recent news, sentiment, sector trends, and red flags
-3. **Calculate scores** - Based on your data analysis, calculate scores for current holdings and promising alternatives
-
-# SCORING METHODOLOGY
-
-Rank candidates using this scoring system:
-- Momentum score (0-100): Position in 6-month return ranking
-- Quality score (0-100): Based on ROE, profit margins, debt levels
-- Technical score (0-100): Price vs 50-day and 200-day moving averages
-- Composite score = (Momentum × 0.4) + (Quality × 0.4) + (Technical × 0.2)
-
-Requirements:
-- Only score stocks that exist in the NASDAQ-100 database
-- Calculate each component score using signals from your SQL queries and news
-- All scores must be between 0 and 100
-
-When you have calculated scores for holdings and alternatives, stop calling tools and summarize your findings.
-"""
-
-
-def get_memory_prompt(portfolio_cash: float, portfolio_positions: dict, research_output, cfg: config.Config) -> str:
-    """
-    Get the prompt for Phase 2: Memory.
-
-    Args:
-        portfolio_cash: Available cash amount
-        portfolio_positions: Current stock positions
-        research_output: Structured output from Phase 1 with scored stocks
-        cfg: Configuration object
-
-    Returns:
-        Formatted prompt for memory phase
-    """
-    # Format the stocks from Phase 1
-    holdings_list = ", ".join([score.symbol for score in research_output.current_holdings_scores])
-    alternatives_list = ", ".join([score.symbol for score in research_output.top_alternatives])
-
-    return f"""# PHASE 2: MEMORY
+    return f"""# HISTORICAL ANALYSIS
 
 You have completed calculating fresh scores. Now analyze historical score patterns to understand trends.
 
 **IMPORTANT:**
 - Do NOT make trading decisions
 - Focus solely on identifying trends and patterns in historical data
-- Analyze ONLY the stocks scored in Phase 1 (listed below)
+- Analyze ONLY the stocks scored earlier (listed below)
 
-# STOCKS TO ANALYZE
+# TODAY'S FRESH SCORES
 
-**Current Holdings:** {holdings_list}
-**Top Alternatives:** {alternatives_list}
+{research_output.model_dump_json(indent=2)}
 
 # YOUR TASK
 
@@ -376,40 +362,54 @@ When you have gathered sufficient historical context, stop calling tools and sum
 """
 
 
-def get_trade_prompt(portfolio_cash: float, portfolio_positions: dict, analysis_context: str, cfg: config.Config) -> str:
+def get_trade_prompt(state) -> str:
     """
-    Get the prompt for Phase 3: Trade.
+    Get the prompt for trading decisions.
 
     Args:
-        portfolio_cash: Available cash amount
-        portfolio_positions: Current stock positions
-        analysis_context: Context from previous analysis steps
-        cfg: Configuration object with trading parameters
+        state: TradingState with research_output, research_analysis, memory_analysis
 
     Returns:
         Formatted prompt for structured output
     """
-    return f"""# PHASE 3: TRADE
+    return f"""# TRADING DECISIONS
 
-You have completed both research (fresh scores) and memory (historical patterns). Now make final trading decisions.
+You have completed both research (fresh scores) and historical analysis (score patterns). Now make final trading decisions.
 
-Current Portfolio:
-- Cash: ${portfolio_cash:.2f}
-- Positions: {portfolio_positions}
-- Max Positions: {cfg.max_positions}
+Portfolio constraints (cash, positions, max positions) are in your context above.
 
 # DECISION RULES
 
+**Cash Management:**
+- Total cost of all BUY recommendations MUST NOT exceed available cash (see context above)
+- Consider SELL proceeds first, then calculate remaining cash for BUY orders
+- Calculate approximate position sizes: (target allocation × total portfolio value) / current stock price
+- Buying fractions of shares is not allowed
+
+**Position Sizing:**
 - No stock more than 35% of portfolio value (diversification)
 - Avoid stocks less than 5% of portfolio value (immaterial positions)
+- Aim for roughly equal-weighted positions when buying multiple stocks
+
+**Trading Logic:**
 - SELL a holding if an alternative scores significantly better with sustained strength
 - SELL half if an alternative scores moderately better
 - BUY top scoring stocks (holdings or alternatives) that show strong patterns
-- Buying fractions of shares is not allowed
+- Process SELL orders first to free up cash for BUY orders
 
 # YOUR ANALYSIS SO FAR
 
-{analysis_context}
+## Fresh Scores from Research
+
+{state["research_output"].model_dump_json(indent=2)}
+
+## Research Analysis
+
+{state["research_analysis"]}
+
+## Memory Analysis
+
+{state["memory_analysis"]}
 
 # PROVIDE STRUCTURED OUTPUT
 
@@ -421,20 +421,79 @@ Based on combining fresh scores with historical patterns, provide:
    - Action: BUY, SELL, or HOLD
    - Symbol: Stock ticker (required)
    - Shares: Number of shares to trade (required for BUY/SELL)
+   - Agent Estimated Price: Current price from research scores (used to calculate total cost)
    - Reasoning: Detailed justification for the recommendation
    - Confidence: HIGH, MEDIUM, or LOW confidence level
 
-3. **Current Holdings Scores**: Provide the scores you calculated in Phase 1 for ALL current positions:
-   - symbol, composite_score, momentum_score, quality_score, technical_score
-   - All scores must be 0-100
+3. **Market Outlook**: Overall market sentiment (Bull/Bear/Neutral) with reasoning
 
-4. **Top Alternatives**: Provide the scores you calculated in Phase 1 for TOP {cfg.top_alternatives_count} highest-scoring stocks NOT currently held:
-   - symbol, composite_score, momentum_score, quality_score, technical_score
-   - All scores must be 0-100
+4. **Risk Assessment**: Key risks and concerns identified in your analysis
 
-Note: These scores will be saved to memory for tracking performance trends over time.
+Focus on providing actionable, specific recommendations based on your research. If no trades are recommended, explain why the current portfolio is optimal."""
 
-5. **Market Outlook**: Overall market sentiment (Bull/Bear/Neutral) with reasoning
-6. **Risk Assessment**: Key risks and concerns identified in your analysis
 
-Focus on providing actionable, specific recommendations based on your research. Include all composite scores for transparency. If no trades are recommended, explain why the current portfolio is optimal."""
+def get_approval_prompt(state) -> str:
+    """
+    Get the prompt for approval review.
+
+    Args:
+        state: TradingState with all analysis and recommendations
+
+    Returns:
+        Formatted prompt for approval review
+    """
+    return f"""# APPROVAL REVIEW
+
+You are reviewing the proposed trading decisions for final approval.
+
+Review all the analysis and proposed trades for consistency and soundness.
+
+## FRESH SCORES FROM RESEARCH
+
+{state["research_output"].model_dump_json(indent=2)}
+
+## RESEARCH ANALYSIS
+
+{state["research_analysis"]}
+
+## MEMORY ANALYSIS
+
+{state["memory_analysis"]}
+
+## TRADE ANALYSIS
+
+{state["trading_analysis"]}
+
+## PROPOSED TRADING OUTPUT
+
+{state["trading_output"].model_dump_json(indent=2)}
+
+## YOUR TASK
+
+Critically review the proposed trades and make a binary decision: approve or reject all trades.
+
+**Check for these issues:**
+
+1. **Alignment Issues**: Do trades contradict the analysis?
+   - Example: "Stock has declining momentum" but recommending BUY
+   - Example: Alternative scored higher but not recommending to sell weaker holding
+
+2. **Risk Violations**: Do trades violate portfolio constraints?
+   - Any position would exceed 35% of portfolio value
+   - Creating positions less than 5% of portfolio value
+   - Too many simultaneous changes (over-trading)
+
+3. **Logical Conflicts**: Internal contradictions?
+   - Individual assessments conflict with overall market outlook
+   - Risk assessment warns about something but trades ignore it
+
+4. **Confidence Issues**: Are recommendations weak or hedged?
+   - Multiple LOW confidence trades
+   - Reasoning is vague or uncertain
+
+**Decision Guidelines:**
+- Set `approved=True` if trades are sound, aligned with analysis, and respect constraints
+- Set `approved=False` if ANY significant issue is found (one bad trade rejects all)
+
+Be critical but fair. Minor issues are acceptable if overall strategy is sound.
+"""

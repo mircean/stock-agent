@@ -15,12 +15,12 @@ from outlook_client import OutlookClient
 logger = logging.getLogger(__name__)
 
 
-def generate_trading_email(trading_analysis, start_portfolio, final_portfolio):
+def generate_trading_email(state, start_portfolio, final_portfolio):
     """
     Generate a formatted markdown email body for trading analysis.
 
     Args:
-        trading_analysis: TradingAnalysis object with recommendations and scores
+        state: TradingState dict with all agent analysis
         start_portfolio: Portfolio object
         final_portfolio: Portfolio object or None
 
@@ -30,7 +30,7 @@ def generate_trading_email(trading_analysis, start_portfolio, final_portfolio):
     # Create formatted markdown email body using Portfolio.print() with markdown enabled
     body = start_portfolio.print("Start Portfolio", use_markdown=True)
     body += "\n\n"
-    body += agent.print_analysis(trading_analysis, use_markdown=True)
+    body += agent.print_agent(state, use_markdown=True)
 
     body += "\n\n"
     if final_portfolio:
@@ -104,12 +104,12 @@ def main():
 
     # Step 3: Run trading agent
     logger.info("Running trading agent...")
-    trading_output, final_portfolio = agent.main(cfg)
+    final_state, final_portfolio = agent.main(cfg)
     logger.info("Trading agent completed successfully")
 
     # Step 4: Send email
     subject = f"Daily Trading Report - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-    body = generate_trading_email(trading_output, start_portfolio, final_portfolio)
+    body = generate_trading_email(final_state, start_portfolio, final_portfolio)
     send_email(subject, body)
 
     logger.info("Daily trading report sent to email")

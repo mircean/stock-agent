@@ -68,6 +68,7 @@ class StockScore(BaseModel):
     momentum_score: float
     quality_score: float
     technical_score: float
+    current_price: float
 
 
 class ResearchOutput(BaseModel):
@@ -83,33 +84,43 @@ class TradeRecommendation(BaseModel):
     action: str  # "BUY", "SELL", or "HOLD"
     symbol: str  # Stock symbol
     shares: int  # Number of shares (required for BUY/SELL, ignored for HOLD)
+    agent_estimated_price: float  # Agent's estimated price at recommendation time
     reasoning: str  # Detailed reasoning for the recommendation
     confidence: Optional[str] = None  # "HIGH", "MEDIUM", "LOW"
 
 
 class TradingOutput(BaseModel):
-    """Complete trading analysis with optional recommendations."""
+    """Structured trading recommendations and analysis."""
 
-    complete_analysis: str  # Full AI analysis message from the agent
     summary: str  # Overall market analysis summary
     trade_recommendations: List[TradeRecommendation]  # Trade recommendations from agent
     market_outlook: str  # Bull/Bear/Neutral with reasoning
     risk_assessment: str  # Risk factors identified
-    current_holdings_scores: List[StockScore]  # Scores for current positions (from Phase 1)
-    top_alternatives: List[StockScore]  # Top alternatives not held (from Phase 1)
+
+
+class ApprovalOutput(BaseModel):
+    """Approval decision for trade recommendations."""
+
+    approved: bool  # True to approve all trades, False to reject all trades
+    reasoning: str  # Detailed reasoning for the approval decision
 
 
 # Define the graph state
 class TradingState(Dict):
-    messages: Annotated[List[BaseMessage], add_messages]
+    messages: Annotated[List[BaseMessage], add_messages]  # Main agent messages (trade/approval)
+    research_messages: Annotated[List[BaseMessage], add_messages]  # Research agent messages
+    memory_messages: Annotated[List[BaseMessage], add_messages]  # Memory agent messages
     portfolio_cash: float
     portfolio_positions: Dict[str, Dict]  # Serializable position data
     tool_call_count: int
     research_tool_calls: int  # Track research phase tool calls
     memory_tool_calls: int  # Track memory phase tool calls
-    analysis_phase: str  # "research", "memory", or "trade"
+    research_analysis: Optional[str] = None  # Research phase analysis text
     research_output: Optional[ResearchOutput] = None  # Scores from research phase
+    memory_analysis: Optional[str] = None  # Memory phase analysis text
+    trading_analysis: Optional[str] = None  # Trading phase analysis text
     trading_output: Optional[TradingOutput] = None  # Final output from trade phase
+    approval_output: Optional[ApprovalOutput] = None  # Approval decision for trades
 
 
 def _execute_sql_query(db_path: str, query: str) -> str:
@@ -413,30 +424,22 @@ def create_get_confidence_metrics_tool(cfg: config.Config):
 
 # Define the agent nodes
 def initialize_agent_node(state: TradingState, cfg: config.Config) -> TradingState:
-    """Initialize agent with system prompt and market analysis prompt."""
+    """Initialize all agents with system prompt and start research agent."""
     # Load portfolio to get prices_as_of for the prompts
     assert os.path.exists(cfg.portfolio_file), f"Portfolio file not found: {cfg.portfolio_file}"
     portfolio = Portfolio.load(cfg)
 
     # Add system message introducing the agent and its goal
-    system_msg = prompts.get_system_prompt(
-        portfolio_cash=state["portfolio_cash"],
-        portfolio_positions=state["portfolio_positions"],
-        data_as_of_date=portfolio.prices_as_of or "unknown",
-        cfg=cfg,
-    )
+    system_msg = prompts.get_system_prompt(portfolio)
 
-    # Add research phase prompt
-    research_prompt = prompts.get_research_prompt(
-        portfolio_cash=state["portfolio_cash"],
-        portfolio_positions=state["portfolio_positions"],
-        data_as_of_date=portfolio.prices_as_of or "unknown",
-        cfg=cfg,
-    )
-
-    # Add system message and research prompt
+    # Add system message to all three agent message lists
+    state["research_messages"].append(SystemMessage(content=system_msg))
+    state["memory_messages"].append(SystemMessage(content=system_msg))
     state["messages"].append(SystemMessage(content=system_msg))
-    state["messages"].append(HumanMessage(content=research_prompt))
+
+    # Add research phase prompt to start research agent
+    research_prompt = prompts.get_research_prompt(portfolio)
+    state["research_messages"].append(HumanMessage(content=research_prompt))
 
     return state
 
@@ -447,9 +450,9 @@ def create_research_node(llm_with_tools, cfg: config.Config):
     def research_node(state: TradingState) -> TradingState:
         """Analyze market data using run_sql and search_web."""
         # The LLM will respond with tool calls, which will be handled by the tool node
-        response = llm_with_tools.invoke(state["messages"])
-        logger.info(f"Research node reasoning: {response.content}")
-        state["messages"].append(response)
+        response = llm_with_tools.invoke(state["research_messages"])
+        # logger.info(f"Research node reasoning: {response.content}")
+        state["research_messages"].append(response)
         return state
 
     return research_node
@@ -460,32 +463,34 @@ def create_research_output_node(structured_llm, cfg: config.Config):
 
     def research_output_node(state: TradingState) -> TradingState:
         """Extract structured scores from research phase."""
+        # Capture the final research analysis from the last AIMessage in research_messages
+        assert state["research_messages"] and isinstance(state["research_messages"][-1], AIMessage)
+        state["research_analysis"] = extract_content_as_string(state["research_messages"][-1].content)
+
         scores_prompt = f"""Based on your research, provide structured scores.
 
 Provide scores for:
 1. ALL current holdings
 2. TOP {cfg.top_alternatives_count} promising alternatives you identified
 
+For each stock include:
+- All score components (composite, momentum, quality, technical)
+- Current price (from the latest stock price data you queried)
+
 Use the scores you calculated during your analysis."""
 
-        state["messages"].append(HumanMessage(content=scores_prompt))
-        research_output = structured_llm.invoke(state["messages"])
+        state["research_messages"].append(HumanMessage(content=scores_prompt))
+        research_output = structured_llm.invoke(state["research_messages"])
         state["research_output"] = research_output
 
         logger.info(f"Research scores captured: {len(research_output.current_holdings_scores)} holdings, {len(research_output.top_alternatives)} alternatives")
 
-        # Add human-readable scores to conversation for visibility
-        scores_text = "Research phase complete. Scores extracted:\n\n"
+        # Add structured output as JSON to research_messages for LangSmith visibility
+        state["research_messages"].append(AIMessage(content=research_output.model_dump_json(indent=2)))
 
-        scores_text += "**Current Holdings:**\n"
-        for score in research_output.current_holdings_scores:
-            scores_text += f"- {score.symbol}: Composite={score.composite_score:.1f}, Momentum={score.momentum_score:.1f}, Quality={score.quality_score:.1f}, Technical={score.technical_score:.1f}\n"
-
-        scores_text += "\n**Top Alternatives:**\n"
-        for score in research_output.top_alternatives:
-            scores_text += f"- {score.symbol}: Composite={score.composite_score:.1f}, Momentum={score.momentum_score:.1f}, Quality={score.quality_score:.1f}, Technical={score.technical_score:.1f}\n"
-
-        state["messages"].append(AIMessage(content=scores_text))
+        # Transition to memory phase - add memory prompt to memory_messages
+        memory_prompt = prompts.get_memory_prompt(research_output=state["research_output"])
+        state["memory_messages"].append(HumanMessage(content=memory_prompt))
 
         return state
 
@@ -497,52 +502,31 @@ def create_memory_node(llm_with_tools, cfg: config.Config):
 
     def memory_node(state: TradingState) -> TradingState:
         """Analyze historical patterns using memory tools."""
-        # Add transition message when entering memory phase
-        if state["analysis_phase"] == "research":
-            state["analysis_phase"] = "memory"
-            memory_prompt = prompts.get_memory_prompt(
-                portfolio_cash=state["portfolio_cash"],
-                portfolio_positions=state["portfolio_positions"],
-                research_output=state["research_output"],
-                cfg=cfg,
-            )
-            state["messages"].append(HumanMessage(content=memory_prompt))
-
         # The LLM will respond with tool calls, which will be handled by the memory tool node
-        response = llm_with_tools.invoke(state["messages"])
-        logger.info(f"Memory analysis node reasoning: {response.content}")
-        state["messages"].append(response)
+        response = llm_with_tools.invoke(state["memory_messages"])
+        # logger.info(f"Memory analysis node reasoning: {response.content}")
+        state["memory_messages"].append(response)
         return state
 
     return memory_node
 
 
 def create_trade_node(llm, cfg: config.Config):
-    """Create the trade node for Phase 3 reasoning."""
+    """Create the trade node for main agent reasoning."""
 
     def trade_node(state: TradingState) -> TradingState:
         """Reason about trading decisions using research scores and memory patterns."""
-        # Add transition message when entering trade phase
-        if state["analysis_phase"] == "memory":
-            state["analysis_phase"] = "trade"
+        # Capture the final memory analysis from the last AIMessage in memory_messages
+        assert state["memory_messages"] and isinstance(state["memory_messages"][-1], AIMessage)
+        state["memory_analysis"] = extract_content_as_string(state["memory_messages"][-1].content)
 
-            # Collect analysis context from previous messages
-            analysis_context = ""
-            for msg in state["messages"]:
-                if isinstance(msg, AIMessage) and msg.content:
-                    analysis_context += extract_content_as_string(msg.content) + "\n\n"
-
-            trade_prompt = prompts.get_trade_prompt(
-                portfolio_cash=state["portfolio_cash"],
-                portfolio_positions=state["portfolio_positions"],
-                analysis_context=analysis_context,
-                cfg=cfg,
-            )
-            state["messages"].append(HumanMessage(content=trade_prompt))
+        trade_prompt = prompts.get_trade_prompt(state)
+        # Add trade prompt to main messages (first use of main agent)
+        state["messages"].append(HumanMessage(content=trade_prompt))
 
         # The LLM reasons about trades (no tools)
         response = llm.invoke(state["messages"])
-        logger.info(f"Trade node reasoning: {response.content}")
+        # logger.info(f"Trade node reasoning: {response.content}")
         state["messages"].append(response)
         return state
 
@@ -554,32 +538,50 @@ def create_trading_output_node(structured_llm, cfg: config.Config):
 
     def trading_output_node(state: TradingState) -> TradingState:
         """Extract structured trading output."""
+        # Capture the trading analysis text from the last AIMessage (before extracting structured output)
+        assert state["messages"] and isinstance(state["messages"][-1], AIMessage)
+        state["trading_analysis"] = extract_content_as_string(state["messages"][-1].content)
+
         output_prompt = """Based on your trading analysis, provide structured output with:
 1. Summary of your market analysis
 2. Specific trade recommendations (BUY/SELL/HOLD with shares and reasoning)
-3. Current holdings scores from Phase 1
-4. Top alternatives scores from Phase 1
-5. Market outlook
-6. Risk assessment"""
+3. Market outlook
+4. Risk assessment"""
 
         state["messages"].append(HumanMessage(content=output_prompt))
-        trading_analysis = structured_llm.invoke(state["messages"])
+        trading_output = structured_llm.invoke(state["messages"])
 
-        # Set the complete analysis from the previous AI message (before the output_prompt)
-        # Get the second-to-last message which has the trade reasoning
-        if len(state["messages"]) >= 2:
-            trade_message = state["messages"][-2]
-            if isinstance(trade_message, AIMessage) and trade_message.content:
-                trading_analysis.complete_analysis = extract_content_as_string(trade_message.content)
+        # Store the structured output in state for later use
+        state["trading_output"] = trading_output
 
-        # Store the structured analysis in state for later use
-        state["trading_output"] = trading_analysis
-
-        analysis_text = print_analysis(trading_analysis)
-        state["messages"].append(AIMessage(content=analysis_text))
+        # Add structured output as JSON to messages for LangSmith visibility
+        state["messages"].append(AIMessage(content=trading_output.model_dump_json(indent=2)))
         return state
 
     return trading_output_node
+
+
+def create_approval_node(structured_llm, cfg: config.Config):
+    """Create the approval node to review and approve/reject trades."""
+
+    def approval_node(state: TradingState) -> TradingState:
+        """Review trading decisions and approve or reject all trades."""
+        assert state["trading_output"] is not None, "trading_output must be set before approval"
+
+        # Create approval prompt with full context
+        approval_prompt = prompts.get_approval_prompt(state)
+
+        state["messages"].append(HumanMessage(content=approval_prompt))
+        approval_output = structured_llm.invoke(state["messages"])
+
+        # Store approval decision in state
+        state["approval_output"] = approval_output
+        state["messages"].append(AIMessage(content=approval_output.model_dump_json(indent=2)))
+        logger.info(f"Approval decision: {approval_output.approved}")
+
+        return state
+
+    return approval_node
 
 
 def create_tools_node_wrapper(tool_node, cfg: config.Config, phase: str):
@@ -591,10 +593,14 @@ def create_tools_node_wrapper(tool_node, cfg: config.Config, phase: str):
         phase: "research" or "memory" to track phase-specific tool calls
     """
 
+    # message_list_key: Key for the message list in state ("research_messages" or "memory_messages")
+    message_list_key = phase + "_messages"
+
     def tools_node_wrapper(state: TradingState) -> TradingState:
         """Execute tools and increment the phase-specific tool call counter."""
         # Count how many tool calls we're about to make
-        last_message = state["messages"][-1]
+        message_list = state[message_list_key]
+        last_message = message_list[-1]
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             state["tool_call_count"] += 1
             if phase == "research":
@@ -602,15 +608,15 @@ def create_tools_node_wrapper(tool_node, cfg: config.Config, phase: str):
             elif phase == "memory":
                 state["memory_tool_calls"] += 1
 
-        # Execute the tools
-        result = tool_node.invoke(state)
+        # ToolNode expects the message list at the "messages" key
+        # Create a temporary state dict with the agent's messages at "messages"
+        temp_state = dict(state)
+        temp_state["messages"] = state[message_list_key]
+        result = tool_node.invoke(temp_state)
 
-        # Ensure the counters are preserved in the result
-        result["tool_call_count"] = state["tool_call_count"]
-        result["research_tool_calls"] = state["research_tool_calls"]
-        result["memory_tool_calls"] = state["memory_tool_calls"]
-        result["analysis_phase"] = state["analysis_phase"]
-        return result
+        # Update the correct message list in state with tool results
+        state[message_list_key] = result["messages"]
+        return state
 
     return tools_node_wrapper
 
@@ -618,7 +624,7 @@ def create_tools_node_wrapper(tool_node, cfg: config.Config, phase: str):
 # Define routing logic
 def should_continue_research(state: TradingState, cfg: config.Config):
     """Route decision for research phase."""
-    last_message = state["messages"][-1]
+    last_message = state["research_messages"][-1]
 
     # If the last message has tool calls, and we haven't reached the tool call limit, go to research_tools
     if hasattr(last_message, "tool_calls") and last_message.tool_calls and state["research_tool_calls"] < cfg.max_tool_calls:
@@ -631,7 +637,7 @@ def should_continue_research(state: TradingState, cfg: config.Config):
 
 def should_continue_memory(state: TradingState, cfg: config.Config):
     """Route decision for memory phase."""
-    last_message = state["messages"][-1]
+    last_message = state["memory_messages"][-1]
 
     # If the last message has tool calls, and we haven't reached the tool call limit, go to memory_tools
     if hasattr(last_message, "tool_calls") and last_message.tool_calls and state["memory_tool_calls"] < cfg.max_tool_calls:
@@ -642,71 +648,124 @@ def should_continue_memory(state: TradingState, cfg: config.Config):
     return "trade"
 
 
-def print_analysis(trading_analysis, use_markdown: bool = False):
-    # Complete Analysis
-    if use_markdown:
-        text = f"## Complete Analysis\n{trading_analysis.complete_analysis}\n\n"
-        text += f"## Market Analysis Summary\n{trading_analysis.summary}\n\n"
-    else:
-        text = f"""
-🤖 COMPLETE ANALYSIS:
-{trading_analysis.complete_analysis}
+def print_agent(state: TradingState, use_markdown: bool = False):
+    """Print formatted agent analysis from state in order: research, memory, trade, approval."""
+    research_analysis = state["research_analysis"]
+    research_output = state["research_output"]
+    memory_analysis = state["memory_analysis"]
+    trading_analysis = state["trading_analysis"]
+    trading_output = state["trading_output"]
+    approval_output = state.get("approval_output")  # May not exist yet
 
-🎯 TRADING ANALYSIS COMPLETE
-📊 Market Analysis Summary: {trading_analysis.summary}
-🎯 Market Outlook: {trading_analysis.market_outlook}"""
+    text = ""
 
-    # Risk Assessment
+    # ========================================
+    # SECTION 1: RESEARCH
+    # ========================================
     if use_markdown:
-        text += f"## Risk Assessment\n{trading_analysis.risk_assessment}\n\n"
+        text += "# Research Phase\n\n"
+        text += f"## Research Analysis\n\n{research_analysis}\n\n"
     else:
-        text += f"\n⚠️ Risk Assessment: {trading_analysis.risk_assessment}"
+        text += "=" * 60 + "\n"
+        text += "SECTION 1: RESEARCH\n"
+        text += "=" * 60 + "\n\n"
+        text += f"📊 Research Analysis:\n{research_analysis}\n\n"
+
+    # Research Output (Scores)
+    if use_markdown:
+        text += "## Research Scores\n\n### Current Holdings\n\n"
+        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
+        text += "|--------|----------:|---------:|--------:|----------:|\n"
+        for score in research_output.current_holdings_scores:
+            text += f"| {score.symbol} | {score.composite_score:.1f} | {score.momentum_score:.1f} | {score.quality_score:.1f} | {score.technical_score:.1f} |\n"
+        text += "\n### Top Alternatives\n\n"
+        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
+        text += "|--------|----------:|---------:|--------:|----------:|\n"
+        for score in research_output.top_alternatives:
+            text += f"| {score.symbol} | {score.composite_score:.1f} | {score.momentum_score:.1f} | {score.quality_score:.1f} | {score.technical_score:.1f} |\n"
+        text += "\n"
+    else:
+        text += "📊 Research Scores:\nCurrent Holdings:\n"
+        for score in research_output.current_holdings_scores:
+            text += f"  {score.symbol}: {score.composite_score:.1f}\n"
+        text += "Top Alternatives:\n"
+        for score in research_output.top_alternatives:
+            text += f"  {score.symbol}: {score.composite_score:.1f}\n"
+        text += "\n"
+
+    # ========================================
+    # SECTION 2: MEMORY
+    # ========================================
+    if use_markdown:
+        text += "# Memory Phase\n\n"
+        text += f"## Memory Analysis\n\n{memory_analysis}\n\n"
+    else:
+        text += "=" * 60 + "\n"
+        text += "SECTION 2: MEMORY\n"
+        text += "=" * 60 + "\n\n"
+        text += f"🧠 Memory Analysis:\n{memory_analysis}\n\n"
+
+    # ========================================
+    # SECTION 3: TRADE
+    # ========================================
+    if use_markdown:
+        text += "# Trade Phase\n\n"
+        text += f"## Trade Analysis\n\n{trading_analysis}\n\n"
+        text += f"**Summary:** {trading_output.summary}\n\n"
+        text += f"**Market Outlook:** {trading_output.market_outlook}\n\n"
+        text += f"**Risk Assessment:** {trading_output.risk_assessment}\n\n"
+    else:
+        text += "=" * 60 + "\n"
+        text += "SECTION 3: TRADE\n"
+        text += "=" * 60 + "\n\n"
+        text += f"💼 Trade Analysis:\n{trading_analysis}\n\n"
+        text += f"Summary: {trading_output.summary}\n"
+        text += f"Market Outlook: {trading_output.market_outlook}\n"
+        text += f"Risk Assessment: {trading_output.risk_assessment}\n\n"
 
     # Trade Recommendations
-    if trading_analysis.trade_recommendations:
+    if use_markdown:
+        text += "## Trade Recommendations\n\n"
+        text += "| Action | Symbol | Shares | Est. Price | Confidence | Reasoning |\n"
+        text += "|--------|--------|-------:|-----------:|-----------:|:----------|\n"
+        for rec in trading_output.trade_recommendations:
+            text += f"| **{rec.action}** | {rec.symbol} | {rec.shares:,} | ${rec.agent_estimated_price:.2f} | {rec.confidence} | {rec.reasoning} |\n"
+        text += "\n"
+    else:
+        text += "📋 Trade Recommendations:\n"
+        for rec in trading_output.trade_recommendations:
+            text += f"  {rec.action} {rec.symbol}"
+            if rec.action in ["BUY", "SELL"]:
+                text += f" - {rec.shares} shares @ ${rec.agent_estimated_price:.2f}"
+            text += f"\n    Reasoning: {rec.reasoning}\n"
+            if rec.confidence:
+                text += f"    Confidence: {rec.confidence}\n"
+        text += "\n"
+
+    # ========================================
+    # SECTION 4: APPROVAL
+    # ========================================
+    if approval_output:
+        decision_text = "✅ APPROVED" if approval_output.approved else "❌ REJECTED"
         if use_markdown:
-            text += "## Trade Recommendations\n\n"
-            text += "| Action | Symbol | Shares | Confidence | Reasoning |\n"
-            text += "|--------|--------|-------:|-----------:|:----------|\n"
-            for rec in trading_analysis.trade_recommendations:
-                text += f"| **{rec.action}** | {rec.symbol} | {rec.shares:,} | {rec.confidence} | {rec.reasoning} |\n"
-            text += "\n"
+            text += "# Approval Phase\n\n"
+            text += f"## Approval Decision\n\n**Decision:** {decision_text}\n\n"
+            text += f"**Reasoning:** {approval_output.reasoning}\n\n"
         else:
-            text += "\n📋 Trade Recommendations\n"
-            for rec in trading_analysis.trade_recommendations:
-                text += f"{str(rec)}\n"
+            text += "=" * 60 + "\n"
+            text += "SECTION 4: APPROVAL\n"
+            text += "=" * 60 + "\n\n"
+            text += f"{decision_text}\n"
+            text += f"Reasoning: {approval_output.reasoning}\n\n"
 
-    # Current Holdings Scores
+    # Closing
     if use_markdown:
-        text += "## Stock Scores - Current Holdings\n\n"
-        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
-        text += "|--------|----------:|---------:|--------:|----------:|\n"
-        for rec in trading_analysis.current_holdings_scores:
-            text += f"| {rec.symbol} | {rec.composite_score:.1f} | {rec.momentum_score:.1f} | {rec.quality_score:.1f} | {rec.technical_score:.1f} |\n"
-        text += "\n"
+        text += "---\n\n"
+        text += "## Agent done!"
     else:
-        text += "📋 Current Holdings Scores:\n"
-        for rec in trading_analysis.current_holdings_scores:
-            text += f"{rec.symbol}: {rec.composite_score}\n"
-
-    # Top Alternatives
-    if use_markdown:
-        text += "## Stock Scores - Top Alternatives\n\n"
-        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
-        text += "|--------|----------:|---------:|--------:|----------:|\n"
-        for rec in trading_analysis.top_alternatives:
-            text += f"| {rec.symbol} | {rec.composite_score:.1f} | {rec.momentum_score:.1f} | {rec.quality_score:.1f} | {rec.technical_score:.1f} |\n"
-        text += "\n"
-    else:
-        text += "📋 Top Alternatives:\n"
-        for rec in trading_analysis.top_alternatives:
-            text += f"{rec.symbol}: {rec.composite_score}\n"
-
-    # Market Outlook
-    if use_markdown:
-        text += f"## Market Outlook\n**{trading_analysis.market_outlook}**\n"
-    else:
-        text += "✅ Analysis session completed!"
+        text += "=" * 60 + "\n"
+        text += "✅ Agent done!"
+        text += "\n" + "=" * 60 + "\n"
 
     return text
 
@@ -748,6 +807,7 @@ def main(cfg: config.Config | None = None):
     # Create structured LLMs for different output types
     research_structured_llm = llm.with_structured_output(ResearchOutput)
     trading_structured_llm = llm.with_structured_output(TradingOutput)
+    approval_structured_llm = llm.with_structured_output(ApprovalOutput)
 
     # Tool setup - split into research and memory tools
     # Research tools: data gathering from stock database and web
@@ -780,6 +840,7 @@ def main(cfg: config.Config | None = None):
     memory_tools_wrapper = create_tools_node_wrapper(memory_tool_node, cfg, "memory")
     trade_node = create_trade_node(llm, cfg)
     trading_output_node = create_trading_output_node(trading_structured_llm, cfg)
+    approval_node = create_approval_node(approval_structured_llm, cfg)
 
     # Add nodes
     workflow.add_node("initialize_agent", lambda state: initialize_agent_node(state, cfg))
@@ -790,6 +851,7 @@ def main(cfg: config.Config | None = None):
     workflow.add_node("memory_tools", memory_tools_wrapper)
     workflow.add_node("trade", trade_node)
     workflow.add_node("trading_output", trading_output_node)
+    workflow.add_node("approval", approval_node)
 
     # Add edges
     workflow.set_entry_point("initialize_agent")
@@ -811,8 +873,11 @@ def main(cfg: config.Config | None = None):
     # Trade phase: reason about trades, then extract structured output
     workflow.add_edge("trade", "trading_output")
 
+    # Approval phase: review and approve/reject trades
+    workflow.add_edge("trading_output", "approval")
+
     # Final output
-    workflow.add_edge("trading_output", END)
+    workflow.add_edge("approval", END)
 
     # Compile the graph
     app = workflow.compile()
@@ -828,12 +893,13 @@ def main(cfg: config.Config | None = None):
     # Initialize state with values from portfolio
     initial_state = TradingState(
         messages=[],
+        research_messages=[],
+        memory_messages=[],
         portfolio_cash=portfolio.cash,
         portfolio_positions=portfolio.positions,
         tool_call_count=0,
         research_tool_calls=0,
         memory_tool_calls=0,
-        analysis_phase="research",
         research_output=None,
         trading_output=None,
     )
@@ -854,7 +920,7 @@ def main(cfg: config.Config | None = None):
             for node_name, state in step.items():
                 final_state = state  # Keep track of final state
                 if node_name != "tools":  # Don't print tool outputs directly
-                    logger.info(f"\n--- {node_name.upper()} ---")
+                    logger.info(f"--- {node_name.upper()} ---")
                     # if state["messages"]:
                     #     last_msg = state["messages"][-1]
                     #     logger.debug(extract_content_as_string(last_msg.content))
@@ -869,9 +935,10 @@ def main(cfg: config.Config | None = None):
 
     # Return structured output directly
     assert final_state, "Final state must exist"
+    logger.info(print_agent(final_state))
+
     trading_output = final_state["trading_output"]
     assert trading_output, "Structured analysis must be present in final state"
-    logger.info(print_analysis(trading_output))
 
     # Log final portfolio comparison
     logger.info(portfolio.print("Current Portfolio"))
@@ -880,22 +947,35 @@ def main(cfg: config.Config | None = None):
     # there are always trade recommendations
     assert trading_output.trade_recommendations, "Trade recommendations must be present in final state"
 
-    # Apply trades and show resulting portfolio
-    final_portfolio = portfolio.apply_trades(trading_output.trade_recommendations)
-    if final_portfolio:
-        logger.info(final_portfolio.print("Portfolio After Trades"))
-        if cfg.execute_trades:
-            final_portfolio.save()
-        else:
-            logger.info("📋 Trade execution disabled - portfolio file not updated")
+    # Check approval status before applying trades
+    approval_output = final_state.get("approval_output")
+    assert approval_output, "Approval output must be present in final state"
+
+    if approval_output.approved:
+        logger.info("✅ Trades APPROVED - applying recommendations")
+        # Apply trades and show resulting portfolio
+        final_portfolio = portfolio.apply_trades(trading_output.trade_recommendations)
+        if final_portfolio:
+            logger.info(final_portfolio.print("Portfolio After Trades"))
+            if cfg.execute_trades:
+                final_portfolio.save()
+            else:
+                logger.info("📋 Trade execution disabled - portfolio file not updated")
+    else:
+        logger.info("❌ Trades REJECTED - skipping trade execution")
+        logger.info(f"Rejection reason: {approval_output.reasoning}")
+        final_portfolio = None
 
     # Validate and filter scores before saving to memory
+    research_output = final_state.get("research_output")
+    assert research_output, "Research output must be present in final state"
+
     stock_db = StockHistoryDatabase(cfg)
 
     prices = {}
     # Validate holdings - all should exist since they're actual positions
     validated_holdings = []
-    for score in trading_output.current_holdings_scores:
+    for score in research_output.current_holdings_scores:
         try:
             prices[score.symbol] = stock_db.get_latest_price(score.symbol)
             validated_holdings.append(score)
@@ -904,7 +984,7 @@ def main(cfg: config.Config | None = None):
 
     # Validate alternatives - filter out hallucinations
     validated_alternatives = []
-    for score in trading_output.top_alternatives:
+    for score in research_output.top_alternatives:
         try:
             prices[score.symbol] = stock_db.get_latest_price(score.symbol)
             validated_alternatives.append(score)
@@ -916,7 +996,7 @@ def main(cfg: config.Config | None = None):
     memory_date = portfolio.prices_as_of
     memory_db.update_memory(memory_date, validated_holdings, validated_alternatives, prices)
 
-    return trading_output, final_portfolio
+    return final_state, final_portfolio
 
 
 if __name__ == "__main__":
