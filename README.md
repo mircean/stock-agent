@@ -2,9 +2,9 @@
 
 LangGraph stock trading agent with the goal to outperform Nasdaq100
 
-## Performance vs Nasday 100
+## Performance vs Nasdaq 100
 
-<img width="1400" height="866" alt="image" src="https://github.com/user-attachments/assets/49dd26f2-02f4-48ec-b6fd-d8e1bbd1956f" />
+![Performance-vs-Nasdaq-100](images/Agent-vs-Nasdaq-100.png)
 
 ## Simulations
 
@@ -18,13 +18,18 @@ LangGraph stock trading agent with the goal to outperform Nasdaq100
    - `TAVILY_API_KEY`
    - `LANGSMITH_API_KEY`
 
-## Scripts
-Run `automation.py` to download the data and run the agent
-Automation.py does
-- downloads the latest stock data
-- updates the portfolio
-- runs the agent
-- sends an email with the agent analysis and trade recommendations
+## Running the Agent
+
+Run the automation script:
+```bash
+python automation.py
+```
+
+The automation script performs the following steps:
+- Downloads the latest stock data
+- Updates the portfolio with current prices
+- Runs the trading agent
+- Sends an email with the agent analysis and trade recommendations
 
 ## Output
 The agent provides detailed market analysis and specific buy/sell recommendations with reasoning based on technical indicators, fundamental metrics, and current market conditions.
