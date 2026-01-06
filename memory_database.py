@@ -8,14 +8,18 @@ Provides advanced analytics for agent's historical analysis and trading confiden
 import json
 import logging
 import os
+import re
 import sqlite3
 import statistics
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import config
 
 logger = logging.getLogger(__name__)
+
+# Increment this when adding new migrations
+CURRENT_SCHEMA_VERSION = 2
 
 
 class MemoryDatabase:
@@ -27,19 +31,63 @@ class MemoryDatabase:
         self.init_database()
 
     def init_database(self):
-        """Initialize memory database with required tables from schema file"""
+        """Initialize memory database with versioned migrations from SQL file"""
         schema_path = os.path.join(os.path.dirname(__file__), "memory_schema.sql")
-
         with open(schema_path, "r") as f:
             schema_sql = f.read()
 
+        # Parse SQL file into versioned sections
+        sections = self._parse_schema_sections(schema_sql)
+
+        # Get current version (need to run version 0 first to create schema_version table)
+        current_version = self._get_schema_version(sections)
+
+        # Apply each section where version > current_version
+        with sqlite3.connect(self.db_path) as conn:
+            for version, sql in enumerate(sections):
+                if version > current_version:
+                    logger.info(f"Applying memory database migration v{version}")
+                    conn.executescript(sql)
+                    conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (version,))
+                    conn.commit()
+
+    def _parse_schema_sections(self, schema_sql: str) -> List[str]:
+        """Parse SQL file into versioned sections split by '-- === VERSION N ===' markers"""
+        parts = re.split(r'--\s*===\s*VERSION\s+\d+\s*===', schema_sql)
+        # First part is header comments, rest are version sections
+        return [part.strip() for part in parts[1:] if part.strip()]
+
+    def _get_schema_version(self, sections: List[str]) -> int:
+        """Get current schema version, running version 0 first if needed"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.executescript(schema_sql)
-            conn.commit()
 
-    def update_memory(self, date: str, holdings_scores: List, alternatives_scores: List, prices: Dict):
-        """Save stock scores for holdings and alternatives"""
+            # Check if schema_version table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+            if not cursor.fetchone():
+                # Run version 0 to create tables
+                conn.executescript(sections[0])
+                conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+                conn.commit()
+                return 0
+
+            cursor.execute("SELECT MAX(version) FROM schema_version")
+            result = cursor.fetchone()[0]
+            return result if result is not None else 0
+
+    def update_memory(self, date: str, holdings_scores: List, alternatives_scores: List, prices: Dict, run_time: Optional[str] = None):
+        """Save stock scores for holdings and alternatives.
+
+        Args:
+            date: Date in YYYY-MM-DD format
+            holdings_scores: List of StockScore objects for current holdings
+            alternatives_scores: List of StockScore objects for alternatives
+            prices: Dict mapping symbol to current price
+            run_time: Optional timestamp for this run (defaults to current time in HH:MM:SS format)
+        """
+        if run_time is None:
+            run_time = datetime.now(timezone.utc).strftime("%H:%M:%S")
+
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
@@ -47,14 +95,15 @@ class MemoryDatabase:
             for score in holdings_scores:
                 cursor.execute(
                     """
-                    INSERT OR REPLACE INTO agent_scores
-                    (date, symbol, composite_score, momentum_score, quality_score,
+                    INSERT INTO agent_scores
+                    (date, symbol, run_time, composite_score, momentum_score, quality_score,
                      technical_score, current_price, is_holding)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         date,
                         score.symbol,
+                        run_time,
                         score.composite_score,
                         score.momentum_score,
                         score.quality_score,
@@ -68,14 +117,15 @@ class MemoryDatabase:
             for score in alternatives_scores:
                 cursor.execute(
                     """
-                    INSERT OR REPLACE INTO agent_scores
-                    (date, symbol, composite_score, momentum_score, quality_score,
+                    INSERT INTO agent_scores
+                    (date, symbol, run_time, composite_score, momentum_score, quality_score,
                      technical_score, current_price, is_holding)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         date,
                         score.symbol,
+                        run_time,
                         score.composite_score,
                         score.momentum_score,
                         score.quality_score,
@@ -86,7 +136,7 @@ class MemoryDatabase:
                 )
 
             conn.commit()
-            logger.info(f"Updated memory with {len(holdings_scores)} holdings and {len(alternatives_scores)} alternatives scores for {date}")
+            logger.info(f"Updated memory with {len(holdings_scores)} holdings and {len(alternatives_scores)} alternatives scores for {date} at {run_time}")
 
     def analyze_stock_trends(self, symbol: str, days: int = 7) -> Dict:
         """Analyze score trends and stability for a specific stock"""

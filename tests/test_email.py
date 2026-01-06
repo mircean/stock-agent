@@ -3,8 +3,13 @@
 Unit test for email generation and sending
 """
 
+import sys
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
 
@@ -21,6 +26,8 @@ class TestEmailGeneration(unittest.TestCase):
         """Set up test data"""
         # Create state dict with all required fields
         self.state = {
+            "research_analysis": "Analyzed market conditions. Tech sector showing strong momentum with NVDA leading at 95.0 composite score. MSFT stable at 88.5. Market breadth is positive.",
+            "memory_analysis": "Historical trends show NVDA on sustained uptrend (trend_slope: +1.2 over 10 days). MSFT showing consolidation with low volatility. No significant deterioration in holdings.",
             "trading_analysis": "This is a test trading analysis with detailed market insights and recommendations.",
             "trading_output": TradingOutput(
                 summary="Test email with sample market analysis showing strong tech sector performance.",

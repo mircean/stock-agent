@@ -3,14 +3,14 @@
 Unit tests for apply_trades_to_portfolio function - Basic functionality tests
 """
 
-import os
 import sys
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
-# Add the project directory to the path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import config
 from agent import TradeRecommendation
@@ -76,7 +76,7 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         """Test 2: Buy new position should add a new lot to portfolio"""
         mock_get_latest_price.side_effect = self.mock_get_price
 
-        trades = [TradeRecommendation(action="BUY", symbol="NVDA", shares=10, reasoning="New position")]
+        trades = [TradeRecommendation(action="BUY", symbol="NVDA", shares=10, agent_estimated_price=100.0, reasoning="New position")]
 
         result = self.initial_portfolio.apply_trades(trades)
 
@@ -113,7 +113,7 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         """Test 3: Buy existing position should add shares to existing lot"""
         mock_get_latest_price.side_effect = self.mock_get_price
 
-        trades = [TradeRecommendation(action="BUY", symbol="AAPL", shares=5, reasoning="Add to position")]
+        trades = [TradeRecommendation(action="BUY", symbol="AAPL", shares=5, agent_estimated_price=150.0, reasoning="Add to position")]
 
         result = self.initial_portfolio.apply_trades(trades)
 
@@ -149,7 +149,7 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         """Test 4: Sell entire position with single lot"""
         mock_get_latest_price.side_effect = self.mock_get_price
 
-        trades = [TradeRecommendation(action="SELL", symbol="AAPL", shares=10, reasoning="Sell all AAPL")]
+        trades = [TradeRecommendation(action="SELL", symbol="AAPL", shares=10, agent_estimated_price=150.0, reasoning="Sell all AAPL")]
 
         result = self.initial_portfolio.apply_trades(trades)
 
@@ -187,7 +187,7 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         """Test 5: Sell partial position from single lot"""
         mock_get_latest_price.side_effect = self.mock_get_price
 
-        trades = [TradeRecommendation(action="SELL", symbol="AAPL", shares=6, reasoning="Partial AAPL sale")]
+        trades = [TradeRecommendation(action="SELL", symbol="AAPL", shares=6, agent_estimated_price=150.0, reasoning="Partial AAPL sale")]
 
         result = self.initial_portfolio.apply_trades(trades)
 
@@ -232,7 +232,7 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         """Test 6: FIFO sell that completely uses oldest lot"""
         mock_get_latest_price.side_effect = self.mock_get_price
 
-        trades = [TradeRecommendation(action="SELL", symbol="MSFT", shares=10, reasoning="Sell 10 MSFT shares")]
+        trades = [TradeRecommendation(action="SELL", symbol="MSFT", shares=10, agent_estimated_price=200.0, reasoning="Sell 10 MSFT shares")]
 
         result = self.multi_lot_portfolio.apply_trades(trades)
 
@@ -266,7 +266,7 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         """Test 7: FIFO sell that uses complete oldest lot and partial second lot"""
         mock_get_latest_price.side_effect = self.mock_get_price
 
-        trades = [TradeRecommendation(action="SELL", symbol="MSFT", shares=25, reasoning="Sell 25 MSFT shares")]
+        trades = [TradeRecommendation(action="SELL", symbol="MSFT", shares=25, agent_estimated_price=200.0, reasoning="Sell 25 MSFT shares")]
 
         result = self.multi_lot_portfolio.apply_trades(trades)
 
@@ -301,7 +301,7 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         """Test 8: FIFO sell entire position across all lots"""
         mock_get_latest_price.side_effect = self.mock_get_price
 
-        trades = [TradeRecommendation(action="SELL", symbol="MSFT", shares=45, reasoning="Sell all MSFT")]
+        trades = [TradeRecommendation(action="SELL", symbol="MSFT", shares=45, agent_estimated_price=200.0, reasoning="Sell all MSFT")]
 
         result = self.multi_lot_portfolio.apply_trades(trades)
 
@@ -323,9 +323,9 @@ class TestApplyTradesToPortfolioBasic(unittest.TestCase):
         mock_get_latest_price.side_effect = self.mock_get_price
 
         trades = [
-            TradeRecommendation(action="SELL", symbol="AAPL", shares=5, reasoning="Partial AAPL sale"),
-            TradeRecommendation(action="BUY", symbol="NVDA", shares=8, reasoning="Buy NVDA"),
-            TradeRecommendation(action="SELL", symbol="GOOG", shares=5, reasoning="Sell all GOOG"),
+            TradeRecommendation(action="SELL", symbol="AAPL", shares=5, agent_estimated_price=150.0, reasoning="Partial AAPL sale"),
+            TradeRecommendation(action="BUY", symbol="NVDA", shares=8, agent_estimated_price=100.0, reasoning="Buy NVDA"),
+            TradeRecommendation(action="SELL", symbol="GOOG", shares=5, agent_estimated_price=300.0, reasoning="Sell all GOOG"),
         ]
 
         result = self.initial_portfolio.apply_trades(trades)

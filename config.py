@@ -7,16 +7,16 @@ import logging
 from dataclasses import dataclass, fields
 from typing import Final
 
-PORTFOLIO_FILE: Final[str] = "portfolio.json"
+PORTFOLIO_FILE: Final[str] = "data/portfolio.json"
 PORTFOLIO_DB_NAME: Final[str] = "portfolio"
-STOCK_HISTORY_DB_NAME: Final[str] = "stock_history.db"
-MEMORY_DB_NAME: Final[str] = "memory.db"
+STOCK_HISTORY_DB_NAME: Final[str] = "data/stock_history.db"
+MEMORY_DB_NAME: Final[str] = "data/memory.db"
 
 # Evaluation/backtesting database and file constants
-EVAL_PORTFOLIO_FILE: Final[str] = "portfolio_eval.json"
+EVAL_PORTFOLIO_FILE: Final[str] = "data/portfolio_eval.json"
 EVAL_PORTFOLIO_DB_NAME: Final[str] = "portfolio_eval"
-EVAL_STOCK_HISTORY_DB_NAME: Final[str] = "stock_history_eval.db"
-EVAL_MEMORY_DB_NAME: Final[str] = "memory_eval.db"
+EVAL_STOCK_HISTORY_DB_NAME: Final[str] = "data/stock_history_eval.db"
+EVAL_MEMORY_DB_NAME: Final[str] = "data/memory_eval.db"
 
 
 @dataclass
@@ -33,6 +33,9 @@ class Config:
     execute_trades: bool = True  # Whether to actually execute trades and update portfolio file
     skip_data_download: bool = False  # Skip data synchronization step
     run_when_market_closed: bool = False  # Run agent even if market data is not from today
+
+    # Backup settings
+    backup_dir: str = "/Users/Mircea/OneDrive/Stock Agent"
 
     # Evaluation parameters
     as_of_date: str = None  # Date to run agent for (YYYY-MM-DD), used for memory tracking

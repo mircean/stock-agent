@@ -52,7 +52,10 @@ class StockFetcher:
         # If market is open (REGULAR), add today's intraday data
         # We reuse the "Close" column for the live price even though the day hasn't closed yet
         # This allows existing queries to work without schema changes
-        if info.get("marketState") == "REGULAR":
+        intraday_fields = ["regularMarketOpen", "regularMarketDayHigh", "regularMarketDayLow", "regularMarketPrice"]
+        has_intraday_data = all(info.get(field) is not None for field in intraday_fields)
+
+        if info.get("marketState") == "REGULAR" and has_intraday_data:
             latest_date = pd.Timestamp(datetime.now(timezone.utc).date())
 
             # Create today's row with live price in Close column
@@ -69,6 +72,8 @@ class StockFetcher:
             )
             history = pd.concat([history, new_row])
             logger.debug(f"Added intraday data for {symbol}: Close=${float(info['regularMarketPrice']):.2f} (live price, market open)")
+        elif info.get("marketState") == "REGULAR":
+            logger.debug(f"Skipping intraday data for {symbol}: missing required fields")
 
         # Get actions (splits and dividends)
         actions = ticker.actions
@@ -186,6 +191,7 @@ class StockFetcher:
     def fetch_single_stock(self, symbol: str) -> None:
         """Fetch and process data for a single stock"""
         logger.info(f"Fetching data for {symbol}")
+        stock_data = None
         for _ in range(3):
             # Add delay to respect rate limits
             time.sleep(self.rate_limit_delay)
@@ -198,6 +204,8 @@ class StockFetcher:
             except Exception as e:
                 logger.error(f"Error fetching data for {symbol}: {e}")
 
+        # if not stock_data:
+        #     return False
         assert stock_data, f"Failed to fetch data for {symbol}"
         try:
             self.process_stock_data(stock_data)

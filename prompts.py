@@ -31,8 +31,8 @@ def get_system_prompt(portfolio) -> str:
 - Goal: Beat NASDAQ-100 performance
 
 Current Portfolio:
-- Cash: ${portfolio_summary['cash']:.2f}
-- Positions: {portfolio_summary['positions']}
+- Cash: ${portfolio_summary["cash"]:.2f}
+- Positions: {portfolio_summary["positions"]}
 """
 
 
@@ -238,8 +238,55 @@ Requirements:
 - Calculate each component score using signals from your SQL queries and news
 - All scores must be between 0 and 100
 
-When you have calculated scores for holdings and alternatives, stop calling tools and summarize your findings.
+**CRITICAL: When done, provide scores in this exact parseable format:**
+
+```
+HOLDINGS_SCORES:
+SYMBOL,COMPOSITE,MOMENTUM,QUALITY,TECHNICAL,PRICE
+LRCX,85.0,90.0,82.0,80.0,177.33
+...
+
+ALTERNATIVES_SCORES:
+SYMBOL,COMPOSITE,MOMENTUM,QUALITY,TECHNICAL,PRICE
+STX,78.0,96.0,65.0,75.0,286.34
+...
+```
+
+Include your analysis and reasoning, then end with this score table. These exact scores will be extracted.
 """
+
+
+def get_research_output_prompt(top_alternatives_count: int) -> str:
+    """
+    Get the prompt for extracting research scores into structured output.
+
+    Args:
+        top_alternatives_count: Number of top alternatives to extract
+
+    Returns:
+        Formatted prompt for score extraction
+    """
+    return f"""**TRANSCRIPTION TASK: Extract the exact scores from your analysis above.**
+
+This is NOT an analysis task. This is a data extraction task.
+
+Review your analysis text above. Find the score tables you provided (HOLDINGS_SCORES and ALTERNATIVES_SCORES sections).
+
+Transcribe those EXACT numbers into structured format:
+- Do NOT recalculate anything
+- Do NOT round or adjust scores
+- Do NOT re-evaluate stocks
+- ONLY copy the numbers you already calculated
+
+If you wrote "STX,78.0,96.0,65.0,75.0,286.34" in your analysis, then:
+- symbol: "STX"
+- composite_score: 78.0
+- momentum_score: 96.0
+- quality_score: 65.0
+- technical_score: 75.0
+- current_price: 286.34
+
+Extract ALL holdings and the TOP {top_alternatives_count} alternatives you scored."""
 
 
 def get_memory_database_schema() -> str:
@@ -256,13 +303,14 @@ def get_memory_database_schema() -> str:
 CREATE TABLE agent_scores (
     date DATE,
     symbol TEXT,
+    run_time TEXT,  -- Time of agent run (e.g., "14:30:00"), multiple runs per day supported
     composite_score REAL,
     momentum_score REAL,
     quality_score REAL,
     technical_score REAL,
     current_price REAL,
     is_holding BOOLEAN,  -- 1 = current holding, 0 = alternative
-    PRIMARY KEY (date, symbol)
+    PRIMARY KEY (date, symbol, run_time)
 );
 ```
 
@@ -378,6 +426,24 @@ You have completed both research (fresh scores) and historical analysis (score p
 
 Portfolio constraints (cash, positions, max positions) are in your context above.
 
+# TRADING PHILOSOPHY
+
+Analyze the market, find good investment opportunities, and make trading decisions.
+
+**Use TRENDS, not single-day scores:**
+- Today's fresh scores show current state, but scores naturally fluctuate day-to-day
+- Memory analysis shows multi-day trends - use these for trading decisions
+- Only trade when memory shows sustained patterns (rising/declining trends, consistent strength/weakness)
+- Single-day score changes without trend confirmation should NOT trigger trades
+
+**Trading rules:**
+- Sell holdings that show sustained declining trends and are clearly weaker than alternatives
+- Buy stocks that show sustained strong trends, whether they are current holdings or alternatives
+- If the stocks in the current portfolio are the best based on trends, do not make any transactions
+- Do not trade if the score differences or trends are marginal
+- Do not necessarily use all the cash to buy stocks, buy only stocks that are worth it
+- Avoid excessive trading
+
 # DECISION RULES
 
 **Cash Management:**
@@ -413,23 +479,56 @@ Portfolio constraints (cash, positions, max positions) are in your context above
 
 # PROVIDE STRUCTURED OUTPUT
 
-Based on combining fresh scores with historical patterns, provide:
+Based on combining fresh scores with historical patterns, provide your trading decisions.
 
-1. **Summary**: A concise overview of your market analysis and key findings
+**FORMAT YOUR FINAL RECOMMENDATIONS IN THIS PARSEABLE FORMAT:**
 
-2. **Trade Recommendations**: Specific actionable trades for each stock with the following format:
-   - Action: BUY, SELL, or HOLD
-   - Symbol: Stock ticker (required)
-   - Shares: Number of shares to trade (required for BUY/SELL)
-   - Agent Estimated Price: Current price from research scores (used to calculate total cost)
-   - Reasoning: Detailed justification for the recommendation
-   - Confidence: HIGH, MEDIUM, or LOW confidence level
+```
+TRADE_RECOMMENDATIONS:
+ACTION,SYMBOL,SHARES,PRICE,CONFIDENCE,REASONING
+SELL,STX,8,286.34,HIGH,Declining momentum and better alternatives available
+BUY,NVDA,10,180.50,HIGH,Strong fundamentals with oversold technical setup
+...
+```
 
-3. **Market Outlook**: Overall market sentiment (Bull/Bear/Neutral) with reasoning
+Then provide:
+1. **Summary**: Concise overview of your market analysis
+2. **Market Outlook**: Bull/Bear/Neutral with reasoning
+3. **Risk Assessment**: Key risks and concerns
 
-4. **Risk Assessment**: Key risks and concerns identified in your analysis
+Include the TRADE_RECOMMENDATIONS table in your response. These exact recommendations will be extracted.
 
-Focus on providing actionable, specific recommendations based on your research. If no trades are recommended, explain why the current portfolio is optimal."""
+If no trades are recommended, include an empty table with just the header row."""
+
+
+def get_trading_output_prompt() -> str:
+    """
+    Get the prompt for extracting trading recommendations into structured output.
+
+    Returns:
+        Formatted prompt for trade recommendation extraction
+    """
+    return """**TRANSCRIPTION TASK: Extract the exact trade recommendations from your analysis above.**
+
+This is NOT a decision-making task. This is a data extraction task.
+
+Review your trading analysis text above. Find the TRADE_RECOMMENDATIONS table you provided.
+
+Transcribe those EXACT values into structured format:
+- Do NOT reconsider or modify any decisions
+- Do NOT recalculate shares or prices
+- Do NOT change confidence levels
+- ONLY copy the recommendations you already made
+
+If you wrote "SELL,STX,8,286.34,HIGH,..." then:
+- action: "SELL"
+- symbol: "STX"
+- shares: 8
+- agent_estimated_price: 286.34
+- confidence: "HIGH"
+- reasoning: "..." (exact text from table)
+
+Also extract your summary, market outlook, and risk assessment from the analysis text."""
 
 
 def get_approval_prompt(state) -> str:

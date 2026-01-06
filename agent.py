@@ -467,18 +467,7 @@ def create_research_output_node(structured_llm, cfg: config.Config):
         assert state["research_messages"] and isinstance(state["research_messages"][-1], AIMessage)
         state["research_analysis"] = extract_content_as_string(state["research_messages"][-1].content)
 
-        scores_prompt = f"""Based on your research, provide structured scores.
-
-Provide scores for:
-1. ALL current holdings
-2. TOP {cfg.top_alternatives_count} promising alternatives you identified
-
-For each stock include:
-- All score components (composite, momentum, quality, technical)
-- Current price (from the latest stock price data you queried)
-
-Use the scores you calculated during your analysis."""
-
+        scores_prompt = prompts.get_research_output_prompt(cfg.top_alternatives_count)
         state["research_messages"].append(HumanMessage(content=scores_prompt))
         research_output = structured_llm.invoke(state["research_messages"])
         state["research_output"] = research_output
@@ -542,12 +531,7 @@ def create_trading_output_node(structured_llm, cfg: config.Config):
         assert state["messages"] and isinstance(state["messages"][-1], AIMessage)
         state["trading_analysis"] = extract_content_as_string(state["messages"][-1].content)
 
-        output_prompt = """Based on your trading analysis, provide structured output with:
-1. Summary of your market analysis
-2. Specific trade recommendations (BUY/SELL/HOLD with shares and reasoning)
-3. Market outlook
-4. Risk assessment"""
-
+        output_prompt = prompts.get_trading_output_prompt()
         state["messages"].append(HumanMessage(content=output_prompt))
         trading_output = structured_llm.invoke(state["messages"])
 
@@ -674,23 +658,27 @@ def print_agent(state: TradingState, use_markdown: bool = False):
     # Research Output (Scores)
     if use_markdown:
         text += "## Research Scores\n\n### Current Holdings\n\n"
-        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
-        text += "|--------|----------:|---------:|--------:|----------:|\n"
+        text += "| Symbol | Composite | Momentum | Quality | Technical | Price |\n"
+        text += "|--------|----------:|---------:|--------:|----------:|------:|\n"
         for score in research_output.current_holdings_scores:
-            text += f"| {score.symbol} | {score.composite_score:.1f} | {score.momentum_score:.1f} | {score.quality_score:.1f} | {score.technical_score:.1f} |\n"
+            text += f"| {score.symbol} | {score.composite_score:.1f} | {score.momentum_score:.1f} | {score.quality_score:.1f} | {score.technical_score:.1f} | ${score.current_price:.2f} |\n"
         text += "\n### Top Alternatives\n\n"
-        text += "| Symbol | Composite | Momentum | Quality | Technical |\n"
-        text += "|--------|----------:|---------:|--------:|----------:|\n"
+        text += "| Symbol | Composite | Momentum | Quality | Technical | Price |\n"
+        text += "|--------|----------:|---------:|--------:|----------:|------:|\n"
         for score in research_output.top_alternatives:
-            text += f"| {score.symbol} | {score.composite_score:.1f} | {score.momentum_score:.1f} | {score.quality_score:.1f} | {score.technical_score:.1f} |\n"
+            text += f"| {score.symbol} | {score.composite_score:.1f} | {score.momentum_score:.1f} | {score.quality_score:.1f} | {score.technical_score:.1f} | ${score.current_price:.2f} |\n"
         text += "\n"
     else:
-        text += "📊 Research Scores:\nCurrent Holdings:\n"
+        text += "📊 Research Scores:\n\nCurrent Holdings:\n"
+        text += "  Symbol  Composite  Momentum  Quality  Technical    Price\n"
+        text += "  ------  ---------  --------  -------  ---------  -------\n"
         for score in research_output.current_holdings_scores:
-            text += f"  {score.symbol}: {score.composite_score:.1f}\n"
-        text += "Top Alternatives:\n"
+            text += f"  {score.symbol:<6}  {score.composite_score:>9.1f}  {score.momentum_score:>8.1f}  {score.quality_score:>7.1f}  {score.technical_score:>9.1f}  ${score.current_price:>6.2f}\n"
+        text += "\nTop Alternatives:\n"
+        text += "  Symbol  Composite  Momentum  Quality  Technical    Price\n"
+        text += "  ------  ---------  --------  -------  ---------  -------\n"
         for score in research_output.top_alternatives:
-            text += f"  {score.symbol}: {score.composite_score:.1f}\n"
+            text += f"  {score.symbol:<6}  {score.composite_score:>9.1f}  {score.momentum_score:>8.1f}  {score.quality_score:>7.1f}  {score.technical_score:>9.1f}  ${score.current_price:>6.2f}\n"
         text += "\n"
 
     # ========================================
@@ -944,8 +932,8 @@ def main(cfg: config.Config | None = None):
     logger.info(portfolio.print("Current Portfolio"))
 
     # Only log "after" portfolio if there are actual trade recommendations
-    # there are always trade recommendations
-    assert trading_output.trade_recommendations, "Trade recommendations must be present in final state"
+    # ok to be empty if no trades are recommended
+    # assert trading_output.trade_recommendations, "Trade recommendations must be present in final state"
 
     # Check approval status before applying trades
     approval_output = final_state.get("approval_output")

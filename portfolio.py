@@ -162,6 +162,12 @@ class Portfolio:
             "nasdaq100": self.nasdaq100,
         }
 
+    def copy(self) -> "Portfolio":
+        """Create a deep copy of the portfolio."""
+        new_portfolio = copy.deepcopy(self)
+        new_portfolio.cfg = self.cfg  # Shared reference, don't deep copy
+        return new_portfolio
+
     def get_prompt_summary(self) -> dict:
         """Get portfolio summary formatted for LLM prompts.
 
@@ -226,13 +232,7 @@ class Portfolio:
         stock_db = StockHistoryDatabase(self.cfg)
 
         # Create new portfolio with deep copy
-        new_portfolio = Portfolio(cfg=self.cfg)
-        new_portfolio.cash = self.cash
-        new_portfolio.positions = copy.deepcopy(self.positions)
-        new_portfolio.closed_lots = copy.deepcopy(self.closed_lots)
-        new_portfolio.prices_as_of = self.prices_as_of
-        new_portfolio.positions_value = self.positions_value
-        new_portfolio.total_value = self.total_value
+        new_portfolio = self.copy()
 
         trades_recommended = 0
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")

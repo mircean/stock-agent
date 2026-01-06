@@ -1,6 +1,8 @@
 import logging
 import os
+import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 import markdown
 from dotenv import load_dotenv
@@ -68,6 +70,40 @@ def send_email(subject, body):
     )
 
 
+def backup_data(cfg):
+    """
+    Backup all data files to OneDrive.
+
+    Args:
+        cfg: Config object with backup_dir setting
+    """
+    assert cfg.backup_dir, "Backup directory must be configured"
+    backup_dir = Path(cfg.backup_dir)
+    assert backup_dir.exists(), f"Backup directory does not exist: {backup_dir}"
+
+    # Create timestamped backup filename
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    backup_filename = f"stock-agent-backup_{timestamp}.zip"
+    backup_path = backup_dir / backup_filename
+
+    # Get data directory path
+    data_dir = Path(__file__).parent / "data"
+
+    logger.info(f"Creating backup: {backup_path}")
+
+    # Create zip file with all data
+    with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for file_path in data_dir.glob("*"):
+            if file_path.is_file():
+                # Add file to zip with relative path
+                zipf.write(file_path, arcname=file_path.name)
+                logger.debug(f"  Added: {file_path.name}")
+
+    # Get backup size
+    backup_size_mb = backup_path.stat().st_size / (1024 * 1024)
+    logger.info(f"Backup completed successfully: {backup_filename} ({backup_size_mb:.2f} MB)")
+
+
 def main():
     """Main automation function."""
     load_dotenv()
@@ -107,7 +143,11 @@ def main():
     final_state, final_portfolio = agent.main(cfg)
     logger.info("Trading agent completed successfully")
 
-    # Step 4: Send email
+    # Step 4: Backup data
+    logger.info("Backing up data...")
+    backup_data(cfg)
+
+    # Step 5: Send email
     subject = f"Daily Trading Report - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     body = generate_trading_email(final_state, start_portfolio, final_portfolio)
     send_email(subject, body)

@@ -107,7 +107,7 @@ def main():
     logger.info("=" * 80 + "\n")
 
     # Check if we should continue from previous results
-    simulations_filename = "simulation_results.json"
+    simulations_filename = "data/simulation_results.json"
     start_sim_id = 0
 
     if cfg.continue_simulation and os.path.exists(simulations_filename):

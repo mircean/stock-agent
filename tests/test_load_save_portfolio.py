@@ -4,6 +4,11 @@ Simple test for Portfolio class
 
 import json
 import os
+import sys
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import config
 import portfolio
@@ -28,7 +33,7 @@ my_portfolio.save()
 
 # Compare both JSON files
 print("\nComparing portfolio.json with portfolio_test.json...")
-with open("portfolio.json", "r") as f:
+with open(cfg.portfolio_file, "r") as f:
     original_data = json.load(f)
 
 with open("portfolio_test.json", "r") as f:
